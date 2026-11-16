@@ -1,0 +1,46 @@
+//@version=5
+// GoldBot Signals — sends BUY / SELL alerts (with SL & TP) to your Gold AI
+// Trading Bot through a TradingView webhook.
+//
+// 1. Pine Editor -> paste this -> "Add to chart" (on XAUUSD).
+// 2. Set "Webhook passphrase" in the indicator settings to the passphrase shown
+//    on the bot dashboard (TradingView tab).
+// 3. Create Alert -> Condition: "GoldBot Signals" -> "Any alert() function call"
+//    -> Notifications: tick Webhook URL and paste your bot's webhook URL.
+indicator("GoldBot Signals", overlay = true)
+
+passphrase = input.string("PASTE_PASSPHRASE_HERE", "Webhook passphrase")
+fastLen    = input.int(20, "Fast EMA", minval = 1)
+slowLen    = input.int(50, "Slow EMA", minval = 1)
+rsiLen     = input.int(14, "RSI length", minval = 1)
+atrLen     = input.int(14, "ATR length", minval = 1)
+slMult     = input.float(1.5, "Stop-loss (x ATR)", minval = 0.1, step = 0.1)
+rr         = input.float(1.5, "Reward : Risk", minval = 0.5, step = 0.1)
+conf       = input.int(80, "Confidence sent to bot", minval = 0, maxval = 100)
+
+fast = ta.ema(close, fastLen)
+slow = ta.ema(close, slowLen)
+r    = ta.rsi(close, rsiLen)
+a    = ta.atr(atrLen)
+
+longCond  = ta.crossover(fast, slow)  and r < 70
+shortCond = ta.crossunder(fast, slow) and r > 30
+
+plot(fast, "Fast EMA", color = color.orange)
+plot(slow, "Slow EMA", color = color.blue)
+plotshape(longCond,  "Buy",  shape.triangleup,   location.belowbar, color.green, size = size.small)
+plotshape(shortCond, "Sell", shape.triangledown, location.abovebar, color.red,   size = size.small)
+
+f(x) => str.tostring(x, "#.##")
+msg(side, sl, tp, why) =>
+    '{"passphrase":"' + passphrase + '","action":"' + side + '","symbol":"' + syminfo.ticker +
+     '","price":' + f(close) + ',"sl":' + f(sl) + ',"tp":' + f(tp) +
+     ',"confidence":' + str.tostring(conf) + ',"comment":"' + why + '"}'
+
+if longCond and barstate.isconfirmed
+    sl = close - a * slMult
+    alert(msg("BUY", sl, close + (close - sl) * rr, "EMA cross up"), alert.freq_once_per_bar_close)
+
+if shortCond and barstate.isconfirmed
+    sl = close + a * slMult
+    alert(msg("SELL", sl, close - (sl - close) * rr, "EMA cross down"), alert.freq_once_per_bar_close)

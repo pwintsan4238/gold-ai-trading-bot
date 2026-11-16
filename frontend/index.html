@@ -1,0 +1,628 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Gold AI Trading Bot — XAU/USD</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+<script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+<script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+<style>
+  body{background:#0b1220}
+  textarea,input,select{background:#0f172a;border:1px solid #1e293b;border-radius:.5rem;padding:.45rem .6rem;color:#e2e8f0}
+  textarea{font-family:ui-monospace,Consolas,monospace;font-size:12.5px;line-height:1.45}
+  ::-webkit-scrollbar{width:8px;height:8px}::-webkit-scrollbar-thumb{background:#1e293b;border-radius:4px}
+</style>
+</head>
+<body>
+<div id="root" class="text-slate-100"></div>
+
+<script type="text/babel">
+const { useState, useEffect, useCallback, useRef } = React;
+
+// ---------------------------------------------------------------- helpers
+const fmt = (n, d=2) => (n===null||n===undefined||isNaN(n)) ? "—" :
+  Number(n).toLocaleString(undefined,{minimumFractionDigits:d,maximumFractionDigits:d});
+const cls = (...a) => a.filter(Boolean).join(" ");
+
+async function api(path, opts={}){
+  const o = {...opts};
+  if(o.body && typeof o.body !== "string"){ o.body = JSON.stringify(o.body); o.headers = {"Content-Type":"application/json"}; }
+  const r = await fetch(path, o);
+  let j = null; try { j = await r.json(); } catch(e) {}
+  if(!r.ok) throw new Error((j && (j.detail || j.error)) || `HTTP ${r.status}`);
+  return j;
+}
+const post = (p, body={}) => api(p, {method:"POST", body});
+const copy = t => navigator.clipboard.writeText(t);
+
+function Badge({text, color}) {
+  return <span className={cls("px-2 py-0.5 rounded text-xs font-semibold whitespace-nowrap", color)}>{text}</span>;
+}
+function Card({title, children, right, className}) {
+  return (
+    <div className={cls("bg-slate-900/70 border border-slate-800 rounded-xl p-4", className)}>
+      {(title||right) && <div className="flex items-center justify-between mb-3 gap-2">
+        <h3 className="text-sm font-semibold text-slate-400 uppercase tracking-wide">{title}</h3>{right}</div>}
+      {children}
+    </div>
+  );
+}
+function Btn({children, onClick, kind="default", disabled, small, title}){
+  const k = {default:"bg-slate-700 hover:bg-slate-600", primary:"bg-sky-600 hover:bg-sky-500",
+    good:"bg-emerald-600 hover:bg-emerald-500", danger:"bg-rose-700 hover:bg-rose-600",
+    ghost:"bg-transparent hover:bg-slate-800 border border-slate-700"}[kind];
+  return <button title={title} onClick={onClick} disabled={disabled}
+    className={cls(k, small?"px-2.5 py-1 text-xs":"px-3 py-1.5 text-sm", "rounded-lg font-semibold transition disabled:opacity-40")}>{children}</button>;
+}
+function CopyBtn({text, label="Copy"}){
+  const [ok,setOk]=useState(false);
+  return <Btn small kind="ghost" onClick={()=>{copy(text);setOk(true);setTimeout(()=>setOk(false),1200)}}>{ok?"Copied ✓":label}</Btn>;
+}
+function Msg({m}){
+  if(!m) return null;
+  return <div className={cls("rounded-lg px-3 py-2 text-sm mt-3 whitespace-pre-wrap",
+    m.err?"bg-rose-900/40 border border-rose-700 text-rose-200":"bg-emerald-900/30 border border-emerald-800 text-emerald-200")}>{m.text}</div>;
+}
+const signalColor = s => s==="BUY" ? "bg-emerald-500/20 text-emerald-300"
+  : s==="SELL" ? "bg-rose-500/20 text-rose-300" : s==="CLOSE" ? "bg-amber-500/20 text-amber-300"
+  : "bg-slate-500/20 text-slate-300";
+const statusColor = s => ({executed:"text-emerald-400", pending:"text-sky-300", rejected:"text-rose-400",
+  ignored:"text-slate-400", expired:"text-slate-500"}[s] || "text-slate-400");
+const readFile = (file, asB64) => new Promise((res, rej) => {
+  const r = new FileReader();
+  r.onload = () => res(asB64 ? r.result.split(",")[1] : r.result);
+  r.onerror = rej;
+  asB64 ? r.readAsDataURL(file) : r.readAsText(file);
+});
+
+// ------------------------------------------------------------ TradingView chart
+const TF = {M1:"1",M5:"5",M15:"15",M30:"30",H1:"60",H4:"240",D1:"D"};
+function TVChart({symbol, timeframe, height=460}){
+  const id = useRef("tv_" + Math.random().toString(36).slice(2));
+  useEffect(()=>{
+    const make = () => new window.TradingView.widget({
+      container_id:id.current, symbol, interval:TF[timeframe]||"15", theme:"dark",
+      style:"1", locale:"en", autosize:true, timezone:"Etc/UTC", hide_side_toolbar:false,
+      allow_symbol_change:true, studies:["MAExp@tv-basicstudies","RSI@tv-basicstudies"],
+      backgroundColor:"#0f172a"});
+    if(window.TradingView) { make(); return; }
+    const s = document.createElement("script");
+    s.src = "https://s3.tradingview.com/tv.js"; s.async = true; s.onload = make;
+    document.head.appendChild(s);
+  }, [symbol, timeframe]);
+  return <div style={{height}} className="rounded-lg overflow-hidden"><div id={id.current} style={{height:"100%"}}/></div>;
+}
+
+// ================================================================ OVERVIEW
+function Overview({data, reload, strategies}){
+  const [trades, setTrades] = useState([]);
+  const [bt, setBt] = useState(null);
+  const [btStrat, setBtStrat] = useState("");
+  const [btLoading, setBtLoading] = useState(false);
+  const [msg, setMsg] = useState(null);
+
+  const loadTrades = useCallback(()=>api("/api/trades?limit=50").then(setTrades).catch(()=>{}),[]);
+  useEffect(()=>{ loadTrades(); const i=setInterval(loadTrades,5000); return ()=>clearInterval(i); },[loadTrades]);
+
+  const runBacktest = async () => {
+    setBtLoading(true); setMsg(null);
+    try { setBt(await post("/api/backtest", {candles:1500, seed:42, strategy: btStrat || data.strategy.key})); }
+    catch(e){ setMsg({err:true,text:e.message}); }
+    setBtLoading(false);
+  };
+  const closeAll = async () => { await post("/api/close_all"); reload(); loadTrades(); };
+  const analyzeNow = async () => { await post("/api/analyze"); reload(); };
+
+  const d = data.decision || {}, plan = data.plan || {}, st = data.stats || {};
+  const pnlColor = (st.today_pnl||0) >= 0 ? "text-emerald-400" : "text-rose-400";
+  const backtestable = strategies.filter(s=>s.backtestable);
+
+  return (
+    <div className="space-y-5">
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+        <Card title="Bot Price"><div className="text-3xl font-bold">${fmt(data.price)}</div>
+          <div className="text-xs text-slate-500 mt-1">{data.data_note}</div></Card>
+        <Card title="Trend"><div className="text-2xl font-bold">{data.trend}</div></Card>
+        <Card title="Balance"><div className="text-3xl font-bold">${fmt(data.balance)}</div></Card>
+        <Card title="Today P/L"><div className={cls("text-3xl font-bold", pnlColor)}>${fmt(st.today_pnl)}</div></Card>
+      </div>
+
+      <Card title={`TradingView chart · ${data.tv_chart_symbol}`}>
+        <TVChart symbol={data.tv_chart_symbol} timeframe={data.timeframe} />
+        <p className="text-xs text-slate-500 mt-2">Live chart from TradingView. The bot trades on its own data feed ({data.mode === "paper" ? "simulator" : "MetaTrader 5"}), so prices can differ.</p>
+      </Card>
+
+      <div className="grid md:grid-cols-2 gap-4">
+        <Card title={`Signal · ${data.strategy.name}`} right={<div className="flex gap-2 items-center">
+            <Btn small kind="ghost" onClick={analyzeNow}>Analyze now</Btn>
+            <Badge text={d.signal||"—"} color={signalColor(d.signal)} /></div>}>
+          <div className="space-y-2">
+            <div className="flex justify-between"><span className="text-slate-400">Confidence</span>
+              <span className="font-semibold">{d.confidence ?? 0}%</span></div>
+            <div className="w-full bg-slate-800 rounded h-2">
+              <div className="h-2 rounded bg-sky-500" style={{width:`${d.confidence||0}%`}}></div></div>
+            <p className="text-sm text-slate-300 mt-2">{d.reason || "—"}</p>
+          </div>
+        </Card>
+        <Card title="Proposed Trade Plan">
+          {plan.ok ? (
+            <div className="grid grid-cols-2 gap-y-1 text-sm">
+              <span className="text-slate-400">Side</span><span className="font-semibold text-right">{plan.side}</span>
+              <span className="text-slate-400">Entry</span><span className="text-right">${fmt(plan.entry)}</span>
+              <span className="text-slate-400">Stop Loss</span><span className="text-right text-rose-300">${fmt(plan.stop_loss)}</span>
+              <span className="text-slate-400">Take Profit</span><span className="text-right text-emerald-300">${fmt(plan.take_profit)}</span>
+              <span className="text-slate-400">Lot</span><span className="text-right">{fmt(plan.lot,2)}</span>
+              <span className="text-slate-400">Risk/Reward</span><span className="text-right">{fmt(plan.risk_reward,2)}</span>
+              <span className="text-slate-400">Risk $</span><span className="text-right">${fmt(plan.risk_amount)}</span>
+            </div>
+          ) : <p className="text-sm text-slate-400">No trade: {plan.reject_reason || "waiting for a clean setup."}</p>}
+        </Card>
+      </div>
+
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+        <Card title="Win Rate"><div className="text-2xl font-bold">{fmt(st.win_rate,1)}%</div></Card>
+        <Card title="Total Trades"><div className="text-2xl font-bold">{st.total_trades||0}</div></Card>
+        <Card title="Open Trades" right={(data.open_trades||[]).length>0 && <Btn small kind="danger" onClick={closeAll}>Close all</Btn>}>
+          <div className="text-2xl font-bold">{(data.open_trades||[]).length}</div></Card>
+        <Card title="Realised P/L"><div className={cls("text-2xl font-bold",(st.total_pnl||0)>=0?"text-emerald-400":"text-rose-400")}>${fmt(st.total_pnl)}</div></Card>
+      </div>
+
+      <Card title="Backtesting" right={<div className="flex gap-2 items-center">
+          <select value={btStrat || data.strategy.key} onChange={e=>setBtStrat(e.target.value)} className="text-sm">
+            {backtestable.map(s=><option key={s.key} value={s.key}>{s.name}</option>)}
+          </select>
+          <Btn kind="primary" onClick={runBacktest} disabled={btLoading}>{btLoading ? "Running…" : "Run Backtest"}</Btn></div>}>
+        {bt ? (
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-3 text-sm">
+            <div><div className="text-slate-400">Trades</div><div className="text-lg font-semibold">{bt.total_trades}</div></div>
+            <div><div className="text-slate-400">Win Rate</div><div className="text-lg font-semibold">{bt.win_rate}%</div></div>
+            <div><div className="text-slate-400">Return</div><div className={cls("text-lg font-semibold",bt.return_pct>=0?"text-emerald-400":"text-rose-400")}>{bt.return_pct}%</div></div>
+            <div><div className="text-slate-400">Max Drawdown</div><div className="text-lg font-semibold text-amber-300">{bt.max_drawdown_pct}%</div></div>
+            <div><div className="text-slate-400">Start</div><div>${fmt(bt.start_balance)}</div></div>
+            <div><div className="text-slate-400">End</div><div>${fmt(bt.end_balance)}</div></div>
+            <div><div className="text-slate-400">P/L</div><div>${fmt(bt.total_pnl)}</div></div>
+            <div><div className="text-slate-400">Candles</div><div>{bt.candles_tested}</div></div>
+          </div>
+        ) : <p className="text-sm text-slate-400">Backtest any strategy on simulated gold data before enabling auto-trading. (TradingView alerts are tested in TradingView; EAs in MetaTrader's Strategy Tester — see the EA tab.)</p>}
+        <Msg m={msg}/>
+      </Card>
+
+      <Card title="Trade Log">
+        <div className="overflow-x-auto">
+          <table className="w-full text-sm">
+            <thead className="text-slate-400 text-left border-b border-slate-800">
+              <tr><th className="py-2 pr-3">Time</th><th className="pr-3">Side</th><th className="pr-3">Source</th><th className="pr-3">Entry</th>
+              <th className="pr-3">SL</th><th className="pr-3">TP</th><th className="pr-3">Lot</th>
+              <th className="pr-3">Result</th><th className="pr-3">P/L</th><th>Reason</th></tr>
+            </thead>
+            <tbody>
+              {trades.length===0 && <tr><td colSpan="10" className="py-4 text-slate-500">No trades yet.</td></tr>}
+              {trades.map(t=>(
+                <tr key={t.id} className="border-b border-slate-800/60">
+                  <td className="py-2 pr-3 text-slate-400 whitespace-nowrap">{(t.opened_at||"").slice(5,16).replace("T"," ")}</td>
+                  <td className="pr-3"><Badge text={t.side} color={signalColor(t.side)} /></td>
+                  <td className="pr-3 text-slate-400 text-xs">{(t.source||"ai").replace("custom:","")}</td>
+                  <td className="pr-3">${fmt(t.entry)}</td>
+                  <td className="pr-3 text-rose-300">${fmt(t.stop_loss)}</td>
+                  <td className="pr-3 text-emerald-300">${fmt(t.take_profit)}</td>
+                  <td className="pr-3">{fmt(t.lot,2)}</td>
+                  <td className="pr-3">{t.result==="OPEN"?<span className="text-sky-300">OPEN</span>:
+                      <span className={t.result==="WIN"?"text-emerald-400":"text-rose-400"}>{t.result}</span>}</td>
+                  <td className="pr-3">{t.pnl!=null?`$${fmt(t.pnl)}`:"—"}</td>
+                  <td className="text-slate-400 max-w-xs truncate" title={t.reason}>{t.reason}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </Card>
+    </div>
+  );
+}
+
+// ================================================================ STRATEGIES
+const STRAT_TEMPLATE = `"""My custom strategy."""
+NAME = "My Strategy"
+DESCRIPTION = "Describe what it does."
+
+
+def generate_signal(df, ind):
+    # df  = candles DataFrame: time, open, high, low, close
+    # ind = indicators: price, ema20, ema50, rsi, macd, macd_signal,
+    #       macd_hist, atr, support, resistance, ema20_above_ema50, ...
+    if ind["ema20_above_ema50"] and ind["rsi"] < 65 and ind["macd_hist"] > 0:
+        return {"signal": "BUY", "confidence": 70, "reason": "Uptrend + momentum",
+                # optional: your own levels (else ATR-based)
+                "stop_loss": ind["price"] - 1.5 * ind["atr"],
+                "take_profit": ind["price"] + 3.0 * ind["atr"]}
+    if not ind["ema20_above_ema50"] and ind["rsi"] > 35 and ind["macd_hist"] < 0:
+        return {"signal": "SELL", "confidence": 70, "reason": "Downtrend + momentum"}
+    return {"signal": "WAIT", "confidence": 0, "reason": "No setup"}
+`;
+
+function Strategies({reload}){
+  const [list, setList] = useState({active:"", items:[]});
+  const [fname, setFname] = useState("my_strategy.py");
+  const [code, setCode] = useState(STRAT_TEMPLATE);
+  const [msg, setMsg] = useState(null);
+  const load = () => api("/api/strategies").then(setList);
+  useEffect(()=>{ load(); },[]);
+
+  const use = async key => { await post("/api/strategies/active",{key}); load(); reload(); };
+  const save = async () => {
+    setMsg(null);
+    try { const r = await post("/api/strategies/custom",{filename:fname.trim(), code});
+      setMsg({text:`Saved ✓  Test run on sample data → ${r.sample_decision.signal} (${r.sample_decision.reason || "no reason"})`}); load(); }
+    catch(e){ setMsg({err:true,text:e.message}); }
+  };
+  const edit = async file => { const r = await api(`/api/strategies/custom/${file}`); setFname(file); setCode(r.code); window.scrollTo({top:document.body.scrollHeight,behavior:"smooth"}); };
+  const del = async file => { if(!confirm(`Delete ${file}?`)) return; await api(`/api/strategies/custom/${file}`,{method:"DELETE"}); load(); reload(); };
+  const upload = async e => { const f=e.target.files[0]; if(!f) return; setFname(f.name.toLowerCase().replace(/[^a-z0-9_.]/g,"_")); setCode(await readFile(f)); e.target.value=""; };
+
+  return (
+    <div className="space-y-5">
+      <Card title="Choose the signal source">
+        <p className="text-sm text-slate-400 mb-3">Whichever you pick, every trade still goes through the same safety gates: auto-trading switch, {""}
+          daily loss stop, max trades/day, one trade at a time, confidence + reward:risk checks, fixed % lot size.</p>
+        <div className="grid md:grid-cols-2 gap-3">
+          {list.items.map(s=>(
+            <div key={s.key} className={cls("rounded-lg border p-3", s.key===list.active?"border-sky-500 bg-sky-500/10":"border-slate-800")}>
+              <div className="flex items-start justify-between gap-2">
+                <div>
+                  <div className="font-semibold">{s.name} {s.type==="custom" && <Badge text="custom" color="bg-violet-500/20 text-violet-300"/>}</div>
+                  <div className="text-xs text-slate-400 mt-1">{s.description || s.file}</div>
+                  {s.error && <div className="text-xs text-rose-400 mt-1">Load error: {s.error}</div>}
+                </div>
+                {s.key===list.active ? <Badge text="ACTIVE" color="bg-sky-500/30 text-sky-200"/> :
+                  <Btn small kind="primary" onClick={()=>use(s.key)}>Use</Btn>}
+              </div>
+              {s.type==="custom" && <div className="flex gap-2 mt-2">
+                <Btn small kind="ghost" onClick={()=>edit(s.file)}>Edit</Btn>
+                <Btn small kind="ghost" onClick={()=>del(s.file)}>Delete</Btn></div>}
+            </div>
+          ))}
+        </div>
+      </Card>
+
+      <Card title="Custom Python strategy" right={<label className="text-xs cursor-pointer px-2.5 py-1 rounded-lg border border-slate-700 hover:bg-slate-800">Load .py file<input type="file" accept=".py" className="hidden" onChange={upload}/></label>}>
+        <div className="flex gap-2 mb-2 items-center">
+          <input value={fname} onChange={e=>setFname(e.target.value)} className="w-64 text-sm" placeholder="my_strategy.py"/>
+          <Btn kind="good" onClick={save}>Save & test</Btn>
+          <Btn kind="ghost" onClick={()=>{setFname("my_strategy.py");setCode(STRAT_TEMPLATE)}}>New from template</Btn>
+        </div>
+        <textarea value={code} onChange={e=>setCode(e.target.value)} spellCheck="false" className="w-full h-96"/>
+        <p className="text-xs text-amber-300/80 mt-2">⚠ Custom strategies run as real Python inside the bot. Only save code you wrote or fully trust.</p>
+        <Msg m={msg}/>
+      </Card>
+    </div>
+  );
+}
+
+// ================================================================ TRADINGVIEW
+function TradingViewTab({data, reload}){
+  const [info, setInfo] = useState(null);
+  const [url, setUrl] = useState("");
+  const [msg, setMsg] = useState(null);
+  const [showPine, setShowPine] = useState(false);
+  const load = useCallback(()=>api("/api/tv/info").then(i=>{setInfo(i); setUrl(u=>u||i.public_url);}),[]);
+  useEffect(()=>{ load(); const i=setInterval(load,5000); return ()=>clearInterval(i); },[load]);
+  if(!info) return <div className="text-slate-400">Loading…</div>;
+
+  const hook = (info.public_url || "https://YOUR-PUBLIC-URL") + info.webhook_path;
+  const active = data.strategy.key === "tradingview";
+  const test = async action => { setMsg(null);
+    try { const r = await post("/api/tv/test",{action}); setMsg({text:`Test ${action}: ${r.signal.status}${r.signal.note?" — "+r.signal.note:""}`}); load(); reload(); }
+    catch(e){ setMsg({err:true,text:e.message}); } };
+  const saveUrl = async () => { await post("/api/tv/public_url",{url}); load(); };
+  const regen = async () => { if(!confirm("Make a new passphrase? Existing TradingView alerts will stop working until you update them.")) return;
+    try { await post("/api/tv/passphrase/regenerate"); load(); } catch(e){ setMsg({err:true,text:e.message}); } };
+  const usetv = async () => { await post("/api/strategies/active",{key:"tradingview"}); reload(); };
+
+  return (
+    <div className="space-y-5">
+      {!active && <div className="bg-amber-900/30 border border-amber-700 text-amber-200 rounded-lg px-4 py-3 text-sm flex items-center justify-between gap-3">
+        <span>The bot is using <b>{data.strategy.name}</b>. TradingView alerts are logged but not traded until you switch.</span>
+        <Btn kind="primary" onClick={usetv}>Trade TradingView alerts</Btn></div>}
+
+      <div className="grid lg:grid-cols-2 gap-5">
+        <Card title="1 · Make the webhook reachable">
+          <p className="text-sm text-slate-400">TradingView sends alerts from the internet, so your local bot needs a public HTTPS address. Easiest: Cloudflare Tunnel (free). In a second terminal run:</p>
+          <div className="flex items-center gap-2 mt-2"><code className="flex-1 bg-slate-950 rounded px-3 py-2 text-sm">cloudflared tunnel --url http://127.0.0.1:8000</code><CopyBtn text="cloudflared tunnel --url http://127.0.0.1:8000"/></div>
+          <p className="text-xs text-slate-500 mt-2">Copy the <code>https://….trycloudflare.com</code> address it prints and paste it here. Only the webhook is reachable through it — the dashboard stays private.</p>
+          <div className="flex gap-2 mt-3"><input value={url} onChange={e=>setUrl(e.target.value)} placeholder="https://xxxx.trycloudflare.com" className="flex-1 text-sm"/><Btn onClick={saveUrl}>Save</Btn></div>
+          <div className="mt-4 text-sm text-slate-400">Your webhook URL</div>
+          <div className="flex items-center gap-2 mt-1"><code className="flex-1 bg-slate-950 rounded px-3 py-2 text-sm text-sky-300 break-all">{hook}</code><CopyBtn text={hook}/></div>
+        </Card>
+
+        <Card title="2 · Your secret passphrase" right={<Btn small kind="ghost" onClick={regen}>Regenerate</Btn>}>
+          <div className="flex items-center gap-2"><code className="flex-1 bg-slate-950 rounded px-3 py-2 text-sm text-amber-300 break-all">{info.passphrase}</code><CopyBtn text={info.passphrase}/></div>
+          <p className="text-xs text-slate-500 mt-2">Every alert must include it, or the bot rejects it. Keep it private.</p>
+          <div className="mt-4 text-sm text-slate-400 mb-2">Try it without TradingView:</div>
+          <div className="flex gap-2"><Btn kind="good" onClick={()=>test("BUY")}>Test BUY</Btn><Btn kind="danger" onClick={()=>test("SELL")}>Test SELL</Btn><Btn onClick={()=>test("CLOSE")}>Test CLOSE</Btn></div>
+          <Msg m={msg}/>
+        </Card>
+      </div>
+
+      <Card title="3 · Create the alert in TradingView" right={<div className="flex gap-2"><CopyBtn text={info.pine} label="Copy Pine script"/><Btn small kind="ghost" onClick={()=>setShowPine(!showPine)}>{showPine?"Hide":"Show"} script</Btn></div>}>
+        <div className="grid md:grid-cols-2 gap-5 text-sm">
+          <div>
+            <div className="font-semibold mb-1">Option A — ready-made GoldBot indicator</div>
+            <ol className="list-decimal ml-5 space-y-1 text-slate-300">
+              <li>TradingView → open <b>XAUUSD</b> → <b>Pine Editor</b> → paste the script → <b>Add to chart</b>.</li>
+              <li>Indicator settings → paste your passphrase into <i>Webhook passphrase</i>.</li>
+              <li><b>Create Alert</b> → Condition: <i>GoldBot Signals</i> → <i>Any alert() function call</i>.</li>
+              <li>Notifications → tick <b>Webhook URL</b> → paste your webhook URL → Create.</li>
+            </ol>
+          </div>
+          <div>
+            <div className="font-semibold mb-1">Option B — your own Pine strategy</div>
+            <p className="text-slate-400 mb-2">Create an alert on the strategy, paste this as the <b>Message</b>, and set the webhook URL:</p>
+            <div className="flex items-start gap-2"><code className="flex-1 bg-slate-950 rounded px-3 py-2 text-xs break-all">{info.templates.strategy_alert_message}</code><CopyBtn text={info.templates.strategy_alert_message}/></div>
+            <p className="text-slate-400 mt-3 mb-1">Manual alert messages:</p>
+            {["manual_buy","manual_sell","manual_close"].map(k=>
+              <div key={k} className="flex items-start gap-2 mb-1"><code className="flex-1 bg-slate-950 rounded px-3 py-1.5 text-xs break-all">{info.templates[k]}</code><CopyBtn text={info.templates[k]}/></div>)}
+          </div>
+        </div>
+        {showPine && <textarea readOnly value={info.pine} className="w-full h-80 mt-4"/>}
+        <p className="text-xs text-slate-500 mt-3">TradingView webhooks need a paid TradingView plan with 2-factor authentication on. Alerts older than {info.max_age_sec}s are ignored, and SL/TP sent in an alert are still checked by the risk manager.</p>
+      </Card>
+
+      <Card title="Alert log">
+        <div className="overflow-x-auto"><table className="w-full text-sm">
+          <thead className="text-slate-400 text-left border-b border-slate-800"><tr><th className="py-2 pr-3">Time (UTC)</th><th className="pr-3">From</th><th className="pr-3">Action</th><th className="pr-3">Price</th><th className="pr-3">SL / TP</th><th className="pr-3">Status</th><th>Note</th></tr></thead>
+          <tbody>
+            {info.signals.length===0 && <tr><td colSpan="7" className="py-4 text-slate-500">No alerts yet. Use the test buttons above.</td></tr>}
+            {info.signals.map(s=>(
+              <tr key={s.id} className="border-b border-slate-800/60">
+                <td className="py-2 pr-3 text-slate-400 whitespace-nowrap">{s.received_at.slice(5,19).replace("T"," ")}</td>
+                <td className="pr-3 text-xs text-slate-400">{s.source}</td>
+                <td className="pr-3"><Badge text={s.action} color={signalColor(s.action)}/></td>
+                <td className="pr-3">{s.price?`$${fmt(s.price)}`:"—"}</td>
+                <td className="pr-3 text-xs">{s.stop_loss?fmt(s.stop_loss):"auto"} / {s.take_profit?fmt(s.take_profit):"auto"}</td>
+                <td className={cls("pr-3 font-semibold", statusColor(s.status))}>{s.status}</td>
+                <td className="text-slate-400 text-xs max-w-sm truncate" title={s.note}>{s.note}</td>
+              </tr>))}
+          </tbody></table></div>
+      </Card>
+    </div>
+  );
+}
+
+// ================================================================ EA MANAGER
+function EAManager({reload}){
+  const [ov, setOv] = useState(null);
+  const [msg, setMsg] = useState(null);
+  const [busy, setBusy] = useState("");
+  const [editor, setEditor] = useState({name:"", code:""});
+  const [runFor, setRunFor] = useState(null);
+  const [testFor, setTestFor] = useState(null);
+  const [compileOut, setCompileOut] = useState(null);
+  const [reports, setReports] = useState([]);
+  const [account, setAccount] = useState(null);
+
+  const load = useCallback(async()=>{ setOv(await api("/api/ea")); api("/api/ea/reports").then(setReports).catch(()=>{}); },[]);
+  useEffect(()=>{ load(); const i=setInterval(load,8000); return ()=>clearInterval(i); },[load]);
+  if(!ov) return <div className="text-slate-400">Loading…</div>;
+
+  const act = async (label, fn) => { setBusy(label); setMsg(null);
+    try { const r = await fn(); if(r && r.message) setMsg({text:r.message}); await load(); reload(); return r; }
+    catch(e){ setMsg({err:true,text:e.message}); }
+    finally { setBusy(""); } };
+
+  const upload = async e => {
+    const files = [...e.target.files]; e.target.value = "";
+    for(const f of files){
+      const bin = /\.ex[45]$/i.test(f.name);
+      await act("upload", async()=>{
+        const r = await post("/api/ea/upload", bin ? {filename:f.name, b64: await readFile(f,true)} : {filename:f.name, code: await readFile(f)});
+        return {message:`Saved ${r.saved}` + (r.warnings.length?`\n⚠ ${r.warnings.join("\n⚠ ")}`:"")};
+      });
+    }
+  };
+  const saveEditor = () => act("save", async()=>{
+    const r = await post("/api/ea/upload",{filename:editor.name.trim(), code:editor.code});
+    return {message:`Saved ${r.saved}` + (r.warnings.length?`\n⚠ ${r.warnings.join("\n⚠ ")}`:"")}; });
+  const view = async name => { const r = await api(`/api/ea/file/${encodeURIComponent(name)}`); setEditor({name, code:r.code}); };
+  const del = name => confirm(`Delete ${name} from the library?`) && act("del", ()=>api(`/api/ea/file/${encodeURIComponent(name)}`,{method:"DELETE"}));
+  const compile = name => act("compile", async()=>{ const r = await post("/api/ea/compile",{name}); setCompileOut({name, ...r});
+    return {message: r.ok ? `${name}: compiled ✓ (${r.summary})` : `${name}: ${r.summary}`}; });
+  const detect = () => act("detect", async()=>{ const r = await post("/api/ea/detect");
+    return {message: r.installs.length ? `Found ${r.installs.length} MetaTrader install(s).` : "No MetaTrader install found. Install MT5 from your broker, open it once, then Detect again — or fill in the paths below."}; });
+  const checkAcct = async () => { try { setAccount(await api("/api/ea/account?platform=MT5")); } catch(e){ setAccount({note:e.message}); } };
+
+  const run = ov.running, files = ov.files;
+  const eas = files.filter(f=>f.kind==="source"||f.kind==="compiled");
+  const presets = files.filter(f=>f.kind==="preset").map(f=>f.name);
+
+  return (
+    <div className="space-y-5">
+      {!ov.is_windows && <div className="bg-amber-900/30 border border-amber-700 text-amber-200 rounded-lg px-4 py-3 text-sm">
+        EAs run inside MetaTrader, which needs Windows. You can manage the library here; compile / run / test work when the bot runs on Windows with MT4 or MT5 installed.</div>}
+      {ov.halted_reason && <div className="bg-rose-900/40 border border-rose-700 text-rose-200 rounded-lg px-4 py-2 text-sm">⛔ {ov.halted_reason}</div>}
+
+      <Card title="Running EA" right={run && <Btn kind="danger" onClick={()=>confirm("Stop the EA? This closes MetaTrader. Open positions stay at your broker with their SL/TP.") && act("stop",()=>post("/api/ea/stop"))} disabled={!!busy}>Stop EA</Btn>}>
+        {run ? (
+          <div className="grid md:grid-cols-4 gap-3 text-sm">
+            <div><div className="text-slate-400">EA</div><div className="font-semibold">{run.name}</div></div>
+            <div><div className="text-slate-400">Chart</div><div>{run.symbol} · {run.period} ({run.platform})</div></div>
+            <div><div className="text-slate-400">Started (UTC)</div><div>{run.started_at.slice(0,16).replace("T"," ")}</div></div>
+            <div><div className="text-slate-400">Status</div><div className={run.terminal_closed?"text-amber-300":"text-emerald-400"}>{run.terminal_closed?"MetaTrader was closed":"Running"}</div></div>
+            {ov.guardian && <div className="md:col-span-4 text-xs text-slate-400">🛡 Guardian: {ov.guardian.active ? `today's loss ${ov.guardian.loss_pct}% of ${ov.guardian.limit_pct}% limit (equity $${fmt(ov.guardian.equity)})` : ov.guardian.note}</div>}
+          </div>
+        ) : <p className="text-sm text-slate-400">No EA running. Upload or paste one below, then click <b>Run</b>.</p>}
+        <Msg m={msg}/>
+      </Card>
+
+      <Card title="EA library" right={<label className="text-sm cursor-pointer px-3 py-1.5 rounded-lg bg-sky-600 hover:bg-sky-500 font-semibold">Upload files<input type="file" multiple accept=".mq5,.mq4,.ex5,.ex4,.mqh,.set" className="hidden" onChange={upload}/></label>}>
+        <p className="text-xs text-slate-500 mb-3">Accepts .mq5 / .mq4 source, compiled .ex5 / .ex4, .mqh includes and .set presets. Includes and presets are copied along with every EA.</p>
+        <div className="overflow-x-auto"><table className="w-full text-sm">
+          <thead className="text-slate-400 text-left border-b border-slate-800"><tr><th className="py-2 pr-3">File</th><th className="pr-3">Platform</th><th className="pr-3">Type</th><th className="pr-3">Inputs</th><th className="text-right">Actions</th></tr></thead>
+          <tbody>
+            {files.length===0 && <tr><td colSpan="5" className="py-4 text-slate-500">Library is empty.</td></tr>}
+            {files.map(f=>(
+              <tr key={f.name} className="border-b border-slate-800/60 align-top">
+                <td className="py-2 pr-3"><div className="font-medium">{f.name}</div>
+                  {f.is_indicator && <div className="text-xs text-amber-300">indicator — won't trade</div>}
+                  {f.uses_dll && <div className="text-xs text-amber-300">uses DLLs (kept disabled)</div>}
+                  {f.kind==="source" && !f.has_ontick && !f.is_indicator && <div className="text-xs text-amber-300">no OnTick()</div>}</td>
+                <td className="pr-3">{f.platform}</td>
+                <td className="pr-3 text-slate-400">{f.kind}</td>
+                <td className="pr-3 text-xs text-slate-400">{(f.inputs||[]).slice(0,4).map(i=>`${i.name}=${i.default}`).join(", ")}{(f.inputs||[]).length>4?` +${f.inputs.length-4}`:""}</td>
+                <td className="text-right whitespace-nowrap space-x-1 py-2">
+                  {f.editable && <Btn small kind="ghost" onClick={()=>view(f.name)}>Edit</Btn>}
+                  {f.kind==="source" && <Btn small onClick={()=>compile(f.name)} disabled={!!busy}>{busy==="compile"?"…":"Compile"}</Btn>}
+                  {(f.kind==="source"||f.kind==="compiled") && <>
+                    <Btn small kind="good" onClick={()=>{setRunFor({name:f.name, symbol:"XAUUSD", period:"M15", preset:"", confirm_demo:false}); setTestFor(null);}}>Run</Btn>
+                    <Btn small kind="primary" onClick={()=>{setTestFor({name:f.name, symbol:"XAUUSD", period:"M15", date_from:"2025-01-01", date_to:new Date().toISOString().slice(0,10), deposit:10000, model:1, preset:""}); setRunFor(null);}}>Test</Btn></>}
+                  <Btn small kind="ghost" onClick={()=>del(f.name)}>✕</Btn>
+                </td>
+              </tr>))}
+          </tbody></table></div>
+
+        {runFor && <div className="mt-4 rounded-lg border border-emerald-700 bg-emerald-900/10 p-4 space-y-3">
+          <div className="font-semibold">Run {runFor.name} automatically</div>
+          <div className="flex flex-wrap gap-3 items-end text-sm">
+            <label>Symbol<br/><input value={runFor.symbol} onChange={e=>setRunFor({...runFor,symbol:e.target.value})} className="w-32"/></label>
+            <label>Timeframe<br/><select value={runFor.period} onChange={e=>setRunFor({...runFor,period:e.target.value})}>{ov.periods.map(p=><option key={p}>{p}</option>)}</select></label>
+            <label>Preset (.set)<br/><select value={runFor.preset} onChange={e=>setRunFor({...runFor,preset:e.target.value})}><option value="">EA defaults</option>{presets.map(p=><option key={p}>{p}</option>)}</select></label>
+            <Btn kind="ghost" onClick={checkAcct}>Check MT5 account</Btn>
+          </div>
+          {account && <div className={cls("text-sm", account.demo===false?"text-rose-300":"text-slate-300")}>{account.note} {account.login?`· #${account.login} ${account.server} · balance ${fmt(account.balance)} ${account.currency}`:""}</div>}
+          <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={runFor.confirm_demo} onChange={e=>setRunFor({...runFor,confirm_demo:e.target.checked})}/> This terminal is logged into a <b>DEMO</b> account</label>
+          <p className="text-xs text-slate-400">MetaTrader restarts with the EA on a {runFor.symbol} {runFor.period} chart and Algo Trading on. The EA uses its own lot size and stops; the bot's 1% rule doesn't apply to it. The guardian closes everything if the day's loss reaches the daily limit (MT5 + MetaTrader5 package).</p>
+          <div className="flex gap-2">
+            <Btn kind="good" disabled={!!busy} onClick={async()=>{
+              const r = await act("run", ()=>post("/api/ea/run",{...runFor, restart:false}));
+              if(r && r.needs_restart && confirm(r.message + "\n\nRestart MetaTrader now?")) await act("run", ()=>post("/api/ea/run",{...runFor, restart:true}));
+              if(r && r.ok) setRunFor(null);
+            }}>{busy==="run"?"Starting…":"Start EA"}</Btn>
+            <Btn kind="ghost" onClick={()=>setRunFor(null)}>Cancel</Btn>
+          </div>
+        </div>}
+
+        {testFor && <div className="mt-4 rounded-lg border border-sky-700 bg-sky-900/10 p-4 space-y-3">
+          <div className="font-semibold">Strategy Tester · {testFor.name}</div>
+          <div className="flex flex-wrap gap-3 items-end text-sm">
+            <label>Symbol<br/><input value={testFor.symbol} onChange={e=>setTestFor({...testFor,symbol:e.target.value})} className="w-28"/></label>
+            <label>Timeframe<br/><select value={testFor.period} onChange={e=>setTestFor({...testFor,period:e.target.value})}>{ov.periods.map(p=><option key={p}>{p}</option>)}</select></label>
+            <label>From<br/><input type="date" value={testFor.date_from} onChange={e=>setTestFor({...testFor,date_from:e.target.value})}/></label>
+            <label>To<br/><input type="date" value={testFor.date_to} onChange={e=>setTestFor({...testFor,date_to:e.target.value})}/></label>
+            <label>Deposit<br/><input type="number" value={testFor.deposit} onChange={e=>setTestFor({...testFor,deposit:+e.target.value})} className="w-28"/></label>
+            <label>Model<br/><select value={testFor.model} onChange={e=>setTestFor({...testFor,model:+e.target.value})}>
+              <option value={0}>Every tick</option><option value={1}>1-minute OHLC</option><option value={2}>Open prices only</option></select></label>
+            <label>Preset<br/><select value={testFor.preset} onChange={e=>setTestFor({...testFor,preset:e.target.value})}><option value="">EA defaults</option>{presets.map(p=><option key={p}>{p}</option>)}</select></label>
+          </div>
+          <p className="text-xs text-slate-400">Close MetaTrader first. It opens, runs the test and closes itself; the report appears below.</p>
+          <div className="flex gap-2"><Btn kind="primary" disabled={!!busy} onClick={async()=>{ const r=await act("test",()=>post("/api/ea/test",testFor)); if(r&&r.ok) setTestFor(null); }}>{busy==="test"?"Starting…":"Run test"}</Btn><Btn kind="ghost" onClick={()=>setTestFor(null)}>Cancel</Btn></div>
+        </div>}
+
+        {compileOut && <div className="mt-4">
+          <div className="flex justify-between items-center mb-1"><span className={cls("text-sm font-semibold", compileOut.ok?"text-emerald-400":"text-rose-400")}>Compile {compileOut.name}: {compileOut.summary}</span><Btn small kind="ghost" onClick={()=>setCompileOut(null)}>Hide</Btn></div>
+          {compileOut.errors.length>0 && <pre className="bg-slate-950 rounded p-3 text-xs text-rose-300 overflow-x-auto max-h-60">{compileOut.errors.join("\n")}</pre>}
+          {compileOut.warnings.length>0 && <pre className="bg-slate-950 rounded p-3 text-xs text-amber-300 overflow-x-auto max-h-40 mt-2">{compileOut.warnings.join("\n")}</pre>}
+        </div>}
+      </Card>
+
+      <Card title="Paste / edit EA code" right={<Btn small kind="ghost" onClick={()=>setEditor({name:"MyEA.mq5", code:""})}>New</Btn>}>
+        <div className="flex gap-2 mb-2"><input value={editor.name} onChange={e=>setEditor({...editor,name:e.target.value})} placeholder="MyEA.mq5" className="w-64 text-sm"/>
+          <Btn kind="good" onClick={saveEditor} disabled={!editor.name||!editor.code}>Save to library</Btn></div>
+        <textarea value={editor.code} onChange={e=>setEditor({...editor,code:e.target.value})} spellCheck="false" placeholder="Paste your MQL5 / MQL4 Expert Advisor code here…" className="w-full h-80"/>
+      </Card>
+
+      <div className="grid lg:grid-cols-2 gap-5">
+        <Card title="MetaTrader paths" right={<Btn small kind="primary" onClick={detect} disabled={!!busy}>{busy==="detect"?"Searching…":"Detect MetaTrader"}</Btn>}>
+          {["MT5","MT4"].map(p=><PathForm key={p} plat={p} s={ov.settings[p]} onSaved={load}/>)}
+          <p className="text-xs text-slate-500">Data folder = MetaTrader → File → Open Data Folder.</p>
+        </Card>
+        <Card title="Tester reports">
+          {reports.length===0 ? <p className="text-sm text-slate-400">No reports yet.</p> :
+            <ul className="text-sm space-y-1">{reports.map(r=><li key={r.file}><a className="text-sky-400 hover:underline" href={`/api/ea/reports/${r.file}`} target="_blank">{r.file}</a> <span className="text-slate-500 text-xs">{r.platform} · {r.modified.slice(0,16).replace("T"," ")}</span></li>)}</ul>}
+        </Card>
+      </div>
+    </div>
+  );
+}
+
+function PathForm({plat, s, onSaved}){
+  const [v, setV] = useState(s);
+  const [saved, setSaved] = useState(false);
+  useEffect(()=>setV(s), [JSON.stringify(s)]);
+  const save = async () => { await post("/api/ea/settings",{platform:plat, ...v}); setSaved(true); setTimeout(()=>setSaved(false),1200); onSaved(); };
+  return (
+    <div className="mb-4">
+      <div className="font-semibold text-sm mb-1">{plat}</div>
+      {[["terminal_path", plat==="MT5"?"terminal64.exe":"terminal.exe"],["metaeditor_path", plat==="MT5"?"metaeditor64.exe":"metaeditor.exe"],["data_path","Data folder"]].map(([k,ph])=>
+        <input key={k} value={v[k]||""} onChange={e=>setV({...v,[k]:e.target.value})} placeholder={ph} className="w-full text-xs mb-1"/>)}
+      <div className="flex items-center gap-3"><label className="text-xs flex items-center gap-1"><input type="checkbox" checked={!!v.portable} onChange={e=>setV({...v,portable:e.target.checked})}/> portable install</label>
+        <Btn small onClick={save}>{saved?"Saved ✓":"Save"}</Btn></div>
+    </div>
+  );
+}
+
+// ================================================================ APP
+function App(){
+  const [data, setData] = useState(null);
+  const [strategies, setStrategies] = useState([]);
+  const [tab, setTab] = useState(localStorage.getItem("goldbot_tab") || "overview");
+  const [err, setErr] = useState(null);
+
+  const load = useCallback(async () => {
+    try{
+      const [s, st] = await Promise.all([api("/api/status"), api("/api/strategies")]);
+      setData(s); setStrategies(st.items); setErr(null);
+    }catch(e){ setErr(String(e)); }
+  }, []);
+  useEffect(()=>{ load(); const id=setInterval(load, 5000); return ()=>clearInterval(id); }, [load]);
+  useEffect(()=>{ try{ localStorage.setItem("goldbot_tab", tab); }catch(e){} }, [tab]);
+
+  const toggleAuto = async () => { await post("/api/autotrade",{enabled: !data.auto_trade}); load(); };
+
+  if(!data) return <div className="p-10 text-slate-400">Loading… {err && <span className="text-rose-400">({err})</span>}</div>;
+
+  const tabs = [["overview","Overview"],["strategies","Strategies"],["tradingview","TradingView"],["ea","EA Manager"]];
+  const eaRun = data.ea && data.ea.running;
+
+  return (
+    <div className="max-w-6xl mx-auto p-5 space-y-5">
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div>
+          <h1 className="text-2xl font-bold">🥇 Gold AI Trading Bot</h1>
+          <p className="text-slate-400 text-sm">{data.symbol} · {data.timeframe} · Strategy: <span className="text-sky-300">{data.strategy.name}</span>
+            {eaRun && <span className="ml-2 text-emerald-300">· EA running: {eaRun.name}</span>}</p>
+        </div>
+        <div className="flex items-center gap-3">
+          <Badge text={data.mode==="paper"?"PAPER / DEMO":"MT5"} color="bg-amber-500/20 text-amber-300" />
+          <button onClick={toggleAuto}
+            className={cls("px-4 py-2 rounded-lg font-semibold transition",
+              data.auto_trade ? "bg-emerald-600 hover:bg-emerald-500" : "bg-slate-700 hover:bg-slate-600")}>
+            Auto-Trading: {data.auto_trade ? "ON" : "OFF"}
+          </button>
+        </div>
+      </div>
+
+      {data.halted_reason && <div className="bg-rose-900/40 border border-rose-700 text-rose-200 rounded-lg px-4 py-2 text-sm">⛔ {data.halted_reason}</div>}
+      {data.error && <div className="bg-rose-900/40 border border-rose-700 text-rose-200 rounded-lg px-4 py-2 text-sm">Engine error: {data.error}</div>}
+
+      <div className="flex gap-1 border-b border-slate-800">
+        {tabs.map(([k,l])=><button key={k} onClick={()=>setTab(k)}
+          className={cls("px-4 py-2 text-sm font-semibold border-b-2 -mb-px transition", tab===k?"border-sky-500 text-sky-300":"border-transparent text-slate-400 hover:text-slate-200")}>{l}</button>)}
+      </div>
+
+      {tab==="overview" && <Overview data={data} reload={load} strategies={strategies}/>}
+      {tab==="strategies" && <Strategies reload={load}/>}
+      {tab==="tradingview" && <TradingViewTab data={data} reload={load}/>}
+      {tab==="ea" && <EAManager reload={load}/>}
+
+      <p className="text-xs text-slate-600 text-center pb-6">
+        Educational software. Defaults to paper trading. Automated trading is risky — never risk money you can't afford to lose.
+      </p>
+    </div>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById("root")).render(<App/>);
+</script>
+</body>
+</html>

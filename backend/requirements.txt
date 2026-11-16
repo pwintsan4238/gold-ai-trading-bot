@@ -1,0 +1,9 @@
+fastapi>=0.110
+uvicorn>=0.27
+pydantic>=2.5
+pandas>=2.0
+numpy>=1.24
+python-dotenv>=1.0
+# Optional — install only when you use them:
+# google-generativeai>=0.5     # for Gemini AI analysis
+# MetaTrader5>=5.0             # for live MT5 trading (Windows only)

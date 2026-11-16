@@ -1,0 +1,11 @@
+# secrets & local state — never commit
+.env
+*.db
+*.db-journal
+__pycache__/
+*.pyc
+backend/ea_library/_runtime/
+backend/ea_library/*.ex4
+backend/ea_library/*.ex5
+.venv/
+venv/
