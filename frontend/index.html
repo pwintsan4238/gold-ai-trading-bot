@@ -738,6 +738,118 @@ function PathForm({plat, s, onSaved}){
 }
 
 
+
+// ================================================================ CLOUD: other tabs (GitHub-friendly)
+const ghRaw = path => `https://raw.githubusercontent.com/${GH.owner}/${GH.repo}/main/${path}`;
+const ghLink = (kind, path, extra="") => `https://github.com/${GH.owner}/${GH.repo}/${kind}/main/${path}${extra}`;
+function ServerNote({children}){
+  return <div className="bg-amber-900/25 border border-amber-800 text-amber-100 rounded-lg px-4 py-3 text-sm my">{children}</div>;
+}
+function LinkBtn({href, children, kind="primary"}){
+  const k = {primary:"bg-sky-600 hover:bg-sky-500", good:"bg-emerald-600 hover:bg-emerald-500", ghost:"border border-slate-700 hover:bg-slate-800"}[kind];
+  return <a href={href} target="_blank" className={cls(k,"inline-block px-3 py-1.5 text-sm rounded-lg font-semibold")}>{children}</a>;
+}
+
+function CloudStrategies({data, strategies}){
+  const [code, setCode] = useState(null);
+  const [fname, setFname] = useState("my_strategy.py");
+  const view = async f => { try { setCode({f, text: await (await fetch(ghRaw(`backend/strategies/custom/${f}`))).text()}); } catch(e){ setCode({f, text:String(e)}); } };
+  const newUrl = ghLink("new", "backend/strategies/custom", `?filename=${encodeURIComponent(fname)}&value=${encodeURIComponent(STRAT_TEMPLATE)}`);
+  return (
+    <div className="space-y-5">
+      <Card title="Choose the signal source">
+        <p className="text-sm text-slate-400 mb-3 my">ဘယ် strategy ကိုရွေးရွေး trade တိုင်းဟာ တူညီတဲ့ safety gates တွေကို ဖြတ်ရပါတယ်။ Strategy ပြောင်းဖို့ <b>Use</b> ကိုနှိပ်ပြီး GitHub မှာ <code>"strategy"</code> ကို ပြင်ကာ <b>Commit changes</b> နှိပ်ပါ — နောက် run (~15 မိနစ်) မှာ ပြောင်းသွားပါမယ်။</p>
+        <div className="grid md:grid-cols-2 gap-3">
+          {strategies.map(s=>(
+            <div key={s.key} className={cls("rounded-lg border p-3", s.key===data.strategy.key?"border-sky-500 bg-sky-500/10":"border-slate-800")}>
+              <div className="flex items-start justify-between gap-2">
+                <div><div className="font-semibold">{s.name} {s.type==="custom" && <Badge text="custom" color="bg-violet-500/20 text-violet-300"/>}</div>
+                  <div className="text-xs text-slate-400 mt-1">{s.description || s.file}</div>
+                  <code className="text-[11px] text-slate-500">"strategy": "{s.key}"</code></div>
+                {s.key===data.strategy.key ? <Badge text="ACTIVE" color="bg-sky-500/30 text-sky-200"/> :
+                  <LinkBtn href={GH.settings}>Use</LinkBtn>}
+              </div>
+              {s.type==="custom" && <div className="flex gap-2 mt-2">
+                <Btn small kind="ghost" onClick={()=>view(s.file)}>View code</Btn>
+                <LinkBtn kind="ghost" href={ghLink("edit", `backend/strategies/custom/${s.file}`)}>Edit on GitHub</LinkBtn></div>}
+            </div>))}
+        </div>
+        {code && <div className="mt-4"><div className="flex justify-between mb-1"><span className="text-sm font-semibold">{code.f}</span><Btn small kind="ghost" onClick={()=>setCode(null)}>Hide</Btn></div>
+          <textarea readOnly value={code.text} className="w-full h-72"/></div>}
+      </Card>
+      <Card title="Add a custom Python strategy">
+        <p className="text-sm text-slate-400 my mb-3">File name ရွေးပြီး <b>Create on GitHub</b> ကိုနှိပ်ပါ — template ပါပြီးသား file အသစ်ပွင့်လာပါမယ်။ ပြင်ပြီး Commit လုပ်ရင် ဒီ list ထဲမှာ ပေါ်လာပြီး settings မှာ <code>"custom:file_name"</code> လို့ ရွေးသုံးနိုင်ပါတယ်။</p>
+        <div className="flex gap-2 items-center"><input value={fname} onChange={e=>setFname(e.target.value.toLowerCase().replace(/[^a-z0-9_.]/g,"_"))} className="w-64 text-sm"/>
+          <LinkBtn kind="good" href={newUrl}>Create on GitHub</LinkBtn></div>
+        <p className="text-xs text-amber-300/80 mt-3 my">⚠ Custom strategy တွေဟာ Python code အစစ်အဖြစ် run ပါတယ်။ ယုံကြည်ရတဲ့ code ကိုသာ ထည့်ပါ။</p>
+      </Card>
+    </div>
+  );
+}
+
+function CloudTradingView({data}){
+  const [pine, setPine] = useState("");
+  useEffect(()=>{ fetch(ghRaw("tradingview/goldbot_alerts.pine")).then(r=>r.text()).then(setPine).catch(()=>{}); },[]);
+  return (
+    <div className="space-y-5">
+      <ServerNote>TradingView alerts တွေကို bot က လက်ခံဖို့ အမြဲဖွင့်ထားတဲ့ server (webhook) လိုပါတယ်။ GitHub က server မဟုတ်တာမို့ alerts နဲ့ auto-trade ကို <b>hosting server</b> ချိတ်ပြီးမှ ဖွင့်ပေးနိုင်ပါမယ်။ အခုလောလောဆယ် chart ကြည့်တာ၊ Pine script ပြင်ဆင်ထားတာ လုပ်နိုင်ပါတယ်။</ServerNote>
+      <Card title={`TradingView chart · ${data.tv_chart_symbol}`}><TVChart symbol={data.tv_chart_symbol} timeframe={data.timeframe}/></Card>
+      <Card title="GoldBot Pine script" right={pine && <CopyBtn text={pine} label="Copy Pine script"/>}>
+        <ol className="list-decimal ml-5 space-y-1 text-sm text-slate-300 my mb-3">
+          <li>TradingView မှာ <b>XAUUSD</b> ကိုဖွင့် → <b>Pine Editor</b> → script ကို paste → <b>Add to chart</b> နှိပ်ပါ။</li>
+          <li>Chart ပေါ်မှာ BUY / SELL signal မြှားတွေကို ချက်ချင်း မြင်ရပါမယ်။</li>
+          <li>Server ရပြီးရင် webhook URL နဲ့ passphrase ထည့်ပြီး alert ဖန်တီးလိုက်တာနဲ့ bot က အလိုအလျောက် trade လုပ်ပါမယ်။</li>
+        </ol>
+        <textarea readOnly value={pine || "Loading…"} className="w-full h-72"/>
+      </Card>
+    </div>
+  );
+}
+
+function CloudEA(){
+  const [files, setFiles] = useState(null);
+  const [code, setCode] = useState(null);
+  useEffect(()=>{ fetch(`https://api.github.com/repos/${GH.owner}/${GH.repo}/contents/backend/ea_library?ref=main`)
+    .then(r=>r.ok?r.json():[]).then(j=>setFiles((Array.isArray(j)?j:[]).filter(f=>/\.(mq5|mq4|ex5|ex4|mqh|set)$/i.test(f.name)))).catch(()=>setFiles([])); },[]);
+  const view = async n => setCode({n, text: await (await fetch(ghRaw(`backend/ea_library/${encodeURIComponent(n)}`))).text()});
+  const plat = n => /4$/.test(n) ? "MT4" : /5$/.test(n) ? "MT5" : "ANY";
+  const kind = n => /\.mqh$/i.test(n) ? "include" : /\.set$/i.test(n) ? "preset" : /\.mq\d$/i.test(n) ? "source" : "compiled";
+  return (
+    <div className="space-y-5">
+      <ServerNote>EA တွေဟာ <b>MetaTrader (MT4/MT5)</b> ထဲမှာ run တာမို့ အမြဲဖွင့်ထားတဲ့ <b>Windows server (VPS)</b> လိုပါတယ်။ EA တွေကို ဒီ library ထဲ အခုကတည်းက ထည့်ထားနိုင်ပြီး Windows hosting ချိတ်ပြီးတာနဲ့ <b>Compile → Run</b> လုပ်ကာ အလိုအလျောက် trade လုပ်ပေးပါမယ်။</ServerNote>
+      <Card title="Running EA"><p className="text-sm text-slate-400 my">Run နေတဲ့ EA မရှိပါ — Windows server ချိတ်ပြီးမှ EA ကို run နိုင်ပါမယ်။</p></Card>
+      <Card title="EA library" right={<LinkBtn href={`https://github.com/${GH.owner}/${GH.repo}/upload/main/backend/ea_library`}>Upload EA to GitHub</LinkBtn>}>
+        <p className="text-xs text-slate-500 mb-3 my">.mq5 / .mq4 source၊ compiled .ex5 / .ex4၊ .mqh includes နဲ့ .set presets တွေကို လက်ခံပါတယ်။ <b>Upload EA to GitHub</b> ကိုနှိပ်ပြီး file ကို ဆွဲထည့်ကာ Commit လုပ်ပါ။</p>
+        <div className="overflow-x-auto"><table className="w-full text-sm">
+          <thead className="text-slate-400 text-left border-b border-slate-800"><tr><th className="py-2 pr-3">File</th><th className="pr-3">Platform</th><th className="pr-3">Type</th><th className="text-right">Actions</th></tr></thead>
+          <tbody>
+            {files===null && <tr><td colSpan="4" className="py-4 text-slate-500">Loading…</td></tr>}
+            {files && files.length===0 && <tr><td colSpan="4" className="py-4 text-slate-500">Library ထဲမှာ ဘာမှမရှိသေးပါ။</td></tr>}
+            {(files||[]).map(f=>(
+              <tr key={f.name} className="border-b border-slate-800/60">
+                <td className="py-2 pr-3 font-medium">{f.name}</td><td className="pr-3">{plat(f.name)}</td><td className="pr-3 text-slate-400">{kind(f.name)}</td>
+                <td className="text-right whitespace-nowrap space-x-1 py-2">
+                  {kind(f.name)!=="compiled" && <Btn small kind="ghost" onClick={()=>view(f.name)}>View</Btn>}
+                  {kind(f.name)!=="compiled" && <LinkBtn kind="ghost" href={ghLink("edit", `backend/ea_library/${encodeURIComponent(f.name)}`)}>Edit</LinkBtn>}
+                  <Btn small disabled title="Needs the Windows server">Compile</Btn>
+                  <Btn small kind="good" disabled title="Needs the Windows server">Run</Btn>
+                  <Btn small kind="primary" disabled title="Needs the Windows server">Test</Btn>
+                </td></tr>))}
+          </tbody></table></div>
+        {code && <div className="mt-4"><div className="flex justify-between mb-1"><span className="text-sm font-semibold">{code.n}</span><Btn small kind="ghost" onClick={()=>setCode(null)}>Hide</Btn></div>
+          <textarea readOnly value={code.text} className="w-full h-80"/></div>}
+      </Card>
+      <Card title="Safety (when running on the server)">
+        <ul className="text-sm text-slate-300 space-y-1 list-disc ml-5 my">
+          <li>LIVE (ငွေအစစ်) account ပေါ်မှာ EA ကို default အနေနဲ့ ပိတ်ထားပါတယ် — DEMO account နဲ့သာ စတင်ပါ။</li>
+          <li>Guardian က တစ်နေ့တာ loss {`3%`} ရောက်ရင် position အားလုံးပိတ်ပြီး EA ကို ရပ်ပေးပါတယ်။</li>
+          <li>DLL imports တွေကို လုံခြုံရေးအတွက် ပိတ်ထားပါတယ်။</li>
+        </ul>
+      </Card>
+    </div>
+  );
+}
+
 // ================================================================ CLOUD BOT (GitHub)
 function CloudTab({data, strategies}){
   const c = data.cloud || {};
@@ -808,7 +920,7 @@ function App(){
 
   if(!data) return <div className="p-10 text-slate-400">Loading… {err && <span className="text-rose-400">({err})</span>}</div>;
 
-  const tabs = CLOUD ? [["overview","Overview"],["cloud","Cloud Bot"]]
+  const tabs = CLOUD ? [["overview","Overview"],["strategies","Strategies"],["tradingview","TradingView"],["ea","EA Manager"],["cloud","Cloud Bot"]]
     : [["overview","Overview"],["strategies","Strategies"],["tradingview","TradingView"],["ea","EA Manager"]];
   const shown = tabs.some(t=>t[0]===tab) ? tab : "overview";
   const eaRun = data.ea && data.ea.running;
@@ -847,9 +959,9 @@ function App(){
       </div>
 
       {shown==="overview" && <Overview data={data} reload={load} strategies={strategies}/>}
-      {shown==="strategies" && <Strategies reload={load}/>}
-      {shown==="tradingview" && <TradingViewTab data={data} reload={load}/>}
-      {shown==="ea" && <EAManager reload={load}/>}
+      {shown==="strategies" && (CLOUD ? <CloudStrategies data={data} strategies={strategies}/> : <Strategies reload={load}/>)}
+      {shown==="tradingview" && (CLOUD ? <CloudTradingView data={data}/> : <TradingViewTab data={data} reload={load}/>)}
+      {shown==="ea" && (CLOUD ? <CloudEA/> : <EAManager reload={load}/>)}
       {shown==="cloud" && <CloudTab data={data} strategies={strategies}/>}
 
       <p className="text-xs text-slate-600 text-center pb-6 my">
