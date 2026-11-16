@@ -1,5 +1,5 @@
 {
- "balance": 10000.0,
+ "balance": 9910.32,
  "trades": [
   {
    "id": 1,
@@ -15,14 +15,38 @@
    "reason": "EMA20<EMA50 (downtrend), MACD bearish, RSI 49 neutral-healthy",
    "source": "rules",
    "mode": "cloud-paper",
+   "result": "LOSS",
+   "pnl": -89.68,
+   "exit_price": 3880.11,
+   "closed_at": "2026-11-16T14:30:00+00:00"
+  },
+  {
+   "id": 2,
+   "opened_at": "2026-11-16T23:00:00+00:00",
+   "side": "SELL",
+   "symbol": "GC=F",
+   "entry": 3855.3,
+   "stop_loss": 3864.99,
+   "take_profit": 3840.77,
+   "lot": 0.1,
+   "confidence": 86,
+   "risk_reward": 1.5,
+   "reason": "EMA20<EMA50 (downtrend), MACD bearish",
+   "source": "rules",
+   "mode": "cloud-paper",
    "result": "OPEN",
    "pnl": null
   }
  ],
- "equity": [],
- "last_candle": "2026-11-16T14:15:00+00:00",
+ "equity": [
+  {
+   "ts": "2026-11-16T14:30:00+00:00",
+   "balance": 9910.32
+  }
+ ],
+ "last_candle": "2026-11-16T23:00:00+00:00",
  "halted_day": null,
  "halted_reason": "",
- "runs": 1,
+ "runs": 2,
  "started_at": "2026-11-16T14:47:50.911358+00:00"
 }
