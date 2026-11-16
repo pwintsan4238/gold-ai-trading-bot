@@ -127,7 +127,31 @@ Safety:
 
 ---
 
-## Quick start (paper mode — no MT5, no API key)
+## ☁️ Runs on GitHub (no PC needed)
+
+This repo runs the bot by itself on **GitHub Actions** every 15 minutes:
+real gold prices (Yahoo Finance, gold futures `GC=F`), the selected strategy,
+every safety limit, and **paper money only** (no broker connection).
+
+- **Live dashboard:** `https://<your-username>.github.io/gold-ai-trading-bot/`
+- **Change strategy / turn auto-trading off:** edit `cloud/settings.json` on
+  GitHub → Commit. Applies on the next run.
+  `strategy`: `ai`, `rules`, or `custom:<file_name>` (files in
+  `backend/strategies/custom/`).
+- **Optional AI:** repo Settings → Secrets and variables → Actions → add
+  `GEMINI_API_KEY`. Without it, `ai` uses the rule engine.
+- **Run history / manual run:** Actions tab → *Gold bot (cloud paper trading)*.
+- Results are saved to the `bot-data` branch (`state.json`, `status.json`).
+
+Limits of the GitHub version: no MetaTrader/EAs and no TradingView webhooks
+(both need an always-on Windows server); scheduled runs can be delayed by
+GitHub; no trades while the market is closed. GitHub pauses scheduled workflows
+in public repos after 60 days without repository activity; re-enable them from
+the Actions tab if that happens.
+
+---
+
+## Quick start on your PC (paper mode — no MT5, no API key)
 
 1. Install Python 3.10+ from python.org (tick "Add Python to PATH").
 2. Open a terminal in the `backend` folder and run:

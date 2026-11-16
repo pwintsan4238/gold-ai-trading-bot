@@ -32,6 +32,7 @@ const cls = (...a) => a.filter(Boolean).join(" ");
 async function api(path, opts={}){
   const o = {...opts};
   if(o.body && typeof o.body !== "string"){ o.body = JSON.stringify(o.body); o.headers = {"Content-Type":"application/json"}; }
+  if(CLOUD) return cloudCall(path, o);
   if(DEMO) return demo.call(path, o);
   const r = await fetch(path, o);
   let j = null; try { j = await r.json(); } catch(e) {}
@@ -44,7 +45,32 @@ const copy = t => navigator.clipboard.writeText(t);
 // ------------------------------------------------------------ DEMO MODE
 // Opened anywhere except your own PC (e.g. the public live link), the dashboard
 // runs on built-in sample data. Nothing connects to a broker; nothing trades.
-const DEMO = !["127.0.0.1","localhost"].includes(location.hostname) || location.hash === "#demo";
+// CLOUD: on GitHub Pages the dashboard shows the GitHub Actions bot's live
+// paper-trading results, read from the repo's `bot-data` branch (read-only).
+const CLOUD = location.hostname.endsWith("github.io") || location.hash === "#cloud";
+const DEMO = !CLOUD && (!["127.0.0.1","localhost"].includes(location.hostname) || location.hash === "#demo");
+const GH = (() => { const owner = CLOUD && location.hostname.endsWith("github.io") ? location.hostname.split(".")[0] : "pwintsan4238";
+  const repo = (CLOUD && location.hostname.endsWith("github.io") && location.pathname.split("/")[1]) || "gold-ai-trading-bot";
+  return {owner, repo, data:`https://raw.githubusercontent.com/${owner}/${repo}/bot-data/status.json`,
+    settings:`https://github.com/${owner}/${repo}/edit/main/cloud/settings.json`,
+    actions:`https://github.com/${owner}/${repo}/actions/workflows/gold-bot.yml`,
+    custom:`https://github.com/${owner}/${repo}/tree/main/backend/strategies/custom`,
+    repoUrl:`https://github.com/${owner}/${repo}`}; })();
+let _cloud = null, _cloudAt = 0;
+async function cloudCall(path, o){
+  if((o.method||"GET").toUpperCase() !== "GET" && path !== "/api/backtest")
+    throw new Error("Read-only on GitHub — change the bot in cloud/settings.json.");
+  if(path === "/api/backtest") throw new Error("Backtests run in the PC version of the bot. The cloud bot is trading live on paper right now.");
+  if(!_cloud || Date.now() - _cloudAt > 60000){
+    const r = await fetch(GH.data + "?t=" + Math.floor(Date.now()/60000));
+    if(!r.ok) throw new Error("No results yet — the first GitHub Actions run hasn't finished. Check again in a few minutes.");
+    _cloud = await r.json(); _cloudAt = Date.now();
+  }
+  if(path === "/api/status") return _cloud.status;
+  if(path.startsWith("/api/trades")) return _cloud.trades;
+  if(path === "/api/strategies") return {active:_cloud.status.strategy.key, items:_cloud.strategies};
+  throw new Error("Not available in the cloud bot.");
+}
 const ask = m => DEMO ? true : window.confirm(m);
 
 const demo = (() => {
@@ -282,12 +308,12 @@ function Overview({data, reload, strategies}){
 
       <Card title={DEMO ? "Price chart (demo)" : `TradingView chart · ${data.tv_chart_symbol}`}>
         {DEMO ? <DemoChart/> : <TVChart symbol={data.tv_chart_symbol} timeframe={data.timeframe} />}
-        <p className="text-xs text-slate-500 mt-2 my">TradingView မှ Live chart ဖြစ်ပါတယ်။ Bot က သူ့ကိုယ်ပိုင် data feed ({data.mode === "paper" ? "simulator" : "MetaTrader 5"}) နဲ့ trade လုပ်တာမို့ ဈေးနှုန်း အနည်းငယ် ကွာနိုင်ပါတယ်။</p>
+        <p className="text-xs text-slate-500 mt-2 my">{CLOUD && "Cloud bot uses gold futures prices (GC=F) from Yahoo Finance. "}TradingView မှ Live chart ဖြစ်ပါတယ်။ Bot က သူ့ကိုယ်ပိုင် data feed ({data.mode === "paper" ? "simulator" : "MetaTrader 5"}) နဲ့ trade လုပ်တာမို့ ဈေးနှုန်း အနည်းငယ် ကွာနိုင်ပါတယ်။</p>
       </Card>
 
       <div className="grid md:grid-cols-2 gap-4">
         <Card title={`Signal · ${data.strategy.name}`} right={<div className="flex gap-2 items-center">
-            <Btn small kind="ghost" onClick={analyzeNow}>Analyze now</Btn>
+            {!CLOUD && <Btn small kind="ghost" onClick={analyzeNow}>Analyze now</Btn>}
             <Badge text={d.signal||"—"} color={signalColor(d.signal)} /></div>}>
           <div className="space-y-2">
             <div className="flex justify-between"><span className="text-slate-400">Confidence</span>
@@ -315,7 +341,7 @@ function Overview({data, reload, strategies}){
       <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
         <Card title="Win Rate"><div className="text-2xl font-bold">{fmt(st.win_rate,1)}%</div></Card>
         <Card title="Total Trades"><div className="text-2xl font-bold">{st.total_trades||0}</div></Card>
-        <Card title="Open Trades" right={(data.open_trades||[]).length>0 && <Btn small kind="danger" onClick={closeAll}>Close all</Btn>}>
+        <Card title="Open Trades" right={!CLOUD && (data.open_trades||[]).length>0 && <Btn small kind="danger" onClick={closeAll}>Close all</Btn>}>
           <div className="text-2xl font-bold">{(data.open_trades||[]).length}</div></Card>
         <Card title="Realised P/L"><div className={cls("text-2xl font-bold",(st.total_pnl||0)>=0?"text-emerald-400":"text-rose-400")}>${fmt(st.total_pnl)}</div></Card>
       </div>
@@ -711,6 +737,57 @@ function PathForm({plat, s, onSaved}){
   );
 }
 
+
+// ================================================================ CLOUD BOT (GitHub)
+function CloudTab({data, strategies}){
+  const c = data.cloud || {};
+  const ago = t => { if(!t) return "—"; const m = Math.round((Date.now()-new Date(t))/60000); return m < 1 ? "just now" : m < 60 ? `${m} min ago` : `${Math.floor(m/60)} h ${m%60} min ago`; };
+  const eq = c.equity || [], start = c.start_balance || 10000;
+  return (
+    <div className="space-y-5">
+      <div className="grid md:grid-cols-4 gap-4">
+        <Card title="Last run"><div className="text-xl font-bold">{ago(c.last_run)}</div><div className="text-xs text-slate-500 mt-1">Run #{c.runs}</div></Card>
+        <Card title="Market"><div className={cls("text-xl font-bold", c.market_open?"text-emerald-400":"text-amber-300")}>{c.market_open?"Open":"Closed"}</div><div className="text-xs text-slate-500 mt-1">Last candle {ago(c.last_candle)}</div></Card>
+        <Card title="Return"><div className={cls("text-xl font-bold", data.balance>=start?"text-emerald-400":"text-rose-400")}>{fmt((data.balance/start-1)*100)}%</div><div className="text-xs text-slate-500 mt-1">from ${fmt(start,0)} paper money</div></Card>
+        <Card title="Running since"><div className="text-xl font-bold">{(c.started_at||"").slice(0,10)}</div><div className="text-xs text-slate-500 mt-1">{data.strategy.name}</div></Card>
+      </div>
+
+      <Card title="How the cloud bot works">
+        <ul className="text-sm text-slate-300 space-y-2 my list-disc ml-5">
+          <li>GitHub Actions က <b>15 မိနစ်</b>တစ်ခါ bot ကို run ပါတယ် — ရွှေဈေးနှုန်း အစစ် (Yahoo Finance, GC=F) ကိုယူပြီး strategy နဲ့ ဆုံးဖြတ်ကာ <b>paper money</b> နဲ့ trade လုပ်ပါတယ်။</li>
+          <li>Safety gates အားလုံး အလုပ်လုပ်ပါတယ် — 1% risk per trade၊ daily loss stop ({fmt(data.config.max_daily_loss*100,0)}%)၊ max {data.config.max_trades_per_day} trades/day၊ တစ်ကြိမ်မှာ trade တစ်ခုသာ။</li>
+          <li>Broker နဲ့ မချိတ်ထားပါ — ငွေအစစ် မသုံးပါ။ MetaTrader EA နဲ့ TradingView webhooks တွေကတော့ အမြဲဖွင့်ထားတဲ့ Windows server လိုတာမို့ ဒီမှာ မပါပါ။</li>
+          <li>Weekend နဲ့ market ပိတ်ချိန်မှာ trade အသစ် မဖွင့်ပါ။ GitHub က scheduled runs တွေကို တစ်ခါတစ်ရံ နောက်ကျစေနိုင်ပါတယ်။</li>
+        </ul>
+      </Card>
+
+      <div className="grid md:grid-cols-2 gap-5">
+        <Card title="Change settings">
+          <p className="text-sm text-slate-400 my mb-3">Strategy ပြောင်းဖို့၊ Auto-Trading ပိတ်/ဖွင့်ဖို့ GitHub ပေါ်က <code>cloud/settings.json</code> ကို edit လုပ်ပြီး <b>Commit changes</b> နှိပ်ပါ။ နောက် run (~15 မိနစ်) မှာ အသက်ဝင်ပါမယ်။</p>
+          <pre className="bg-slate-950 rounded p-3 text-xs overflow-x-auto">{JSON.stringify(c.settings||{}, null, 2)}</pre>
+          <div className="flex flex-wrap gap-2 mt-3">
+            <a href={GH.settings} target="_blank" className="px-3 py-1.5 text-sm rounded-lg font-semibold bg-sky-600 hover:bg-sky-500">Edit settings on GitHub</a>
+            <a href={GH.actions} target="_blank" className="px-3 py-1.5 text-sm rounded-lg font-semibold bg-slate-700 hover:bg-slate-600">Run history / Run now</a>
+          </div>
+        </Card>
+        <Card title="Strategies you can use">
+          <ul className="text-sm space-y-2">{strategies.map(s=>(
+            <li key={s.key} className="flex justify-between gap-3"><span><b>{s.name}</b> <span className="text-slate-500 text-xs">"{s.key}"</span><br/><span className="text-xs text-slate-400">{s.description}</span></span>
+              {s.key===data.strategy.key && <Badge text="ACTIVE" color="bg-sky-500/30 text-sky-200"/>}</li>))}</ul>
+          <p className="text-xs text-slate-500 mt-3 my">Custom strategy အသစ်ထည့်ချင်ရင် <a className="text-sky-400 underline" href={GH.custom} target="_blank">backend/strategies/custom</a> ထဲမှာ .py file ထည့်ပြီး settings.json မှာ "custom:file_name" လို့ ရေးပါ။</p>
+        </Card>
+      </div>
+
+      {eq.length > 1 && <Card title="Balance history">
+        <svg viewBox="0 0 1000 200" preserveAspectRatio="none" className="w-full h-40">{(() => {
+          const v = [start, ...eq.map(e=>e.balance)], lo = Math.min(...v), hi = Math.max(...v), r = (hi-lo)||1;
+          const pts = v.map((b,i)=>`${(i/(v.length-1)*1000).toFixed(1)},${(190-(b-lo)/r*180).toFixed(1)}`).join(" ");
+          return <polyline points={pts} fill="none" stroke={v[v.length-1]>=start?"#10b981":"#f43f5e"} strokeWidth="2" vectorEffect="non-scaling-stroke"/>; })()}</svg>
+      </Card>}
+    </div>
+  );
+}
+
 // ================================================================ APP
 function App(){
   const [data, setData] = useState(null);
@@ -731,7 +808,9 @@ function App(){
 
   if(!data) return <div className="p-10 text-slate-400">Loading… {err && <span className="text-rose-400">({err})</span>}</div>;
 
-  const tabs = [["overview","Overview"],["strategies","Strategies"],["tradingview","TradingView"],["ea","EA Manager"]];
+  const tabs = CLOUD ? [["overview","Overview"],["cloud","Cloud Bot"]]
+    : [["overview","Overview"],["strategies","Strategies"],["tradingview","TradingView"],["ea","EA Manager"]];
+  const shown = tabs.some(t=>t[0]===tab) ? tab : "overview";
   const eaRun = data.ea && data.ea.running;
 
   return (
@@ -743,15 +822,20 @@ function App(){
             {eaRun && <span className="ml-2 text-emerald-300">· EA running: {eaRun.name}</span>}</p>
         </div>
         <div className="flex items-center gap-3">
-          <Badge text={data.mode==="paper"?"PAPER / DEMO":"MT5"} color="bg-amber-500/20 text-amber-300" />
+          <Badge text={CLOUD?"CLOUD · PAPER":data.mode==="paper"?"PAPER / DEMO":"MT5"} color="bg-amber-500/20 text-amber-300" />
+          {CLOUD ? <a href={GH.settings} target="_blank" title="Change in cloud/settings.json"
+            className={cls("px-4 py-2 rounded-lg font-semibold", data.auto_trade ? "bg-emerald-600" : "bg-slate-700")}>
+            Auto-Trading: {data.auto_trade ? "ON" : "OFF"}</a> :
           <button onClick={toggleAuto}
             className={cls("px-4 py-2 rounded-lg font-semibold transition",
               data.auto_trade ? "bg-emerald-600 hover:bg-emerald-500" : "bg-slate-700 hover:bg-slate-600")}>
             Auto-Trading: {data.auto_trade ? "ON" : "OFF"}
-          </button>
+          </button>}
         </div>
       </div>
 
+      {CLOUD && <div className="bg-sky-900/30 border border-sky-800 text-sky-100 rounded-lg px-4 py-3 text-sm my">
+        <b>LIVE on GitHub</b> — ဒီ bot ဟာ GitHub Actions ပေါ်မှာ 15 မိနစ်တစ်ခါ run ပြီး ရွှေဈေးနှုန်း အစစ်နဲ့ <b>paper trading</b> လုပ်နေပါတယ် (ငွေအစစ် မသုံးပါ)။ <a className="underline" href={GH.repoUrl} target="_blank">GitHub repo</a></div>}
       {DEMO && <div className="bg-violet-900/40 border border-violet-700 text-violet-100 rounded-lg px-4 py-3 text-sm my">
         <b>DEMO MODE</b> — ဒါက နမူနာ data နဲ့ ပြထားတဲ့ demo ဖြစ်ပါတယ်။ Broker နဲ့ မချိတ်ထားသလို တကယ် trade လည်း မလုပ်ပါ။ Bot အစစ်ကို ကိုယ့် Windows PC မှာ run ပြီး TradingView alerts နဲ့ MetaTrader EA တွေကို အလိုအလျောက် trade လုပ်စေနိုင်ပါတယ်။</div>}
       {data.halted_reason && <div className="bg-rose-900/40 border border-rose-700 text-rose-200 rounded-lg px-4 py-2 text-sm">⛔ {data.halted_reason}</div>}
@@ -759,13 +843,14 @@ function App(){
 
       <div className="flex gap-1 border-b border-slate-800">
         {tabs.map(([k,l])=><button key={k} onClick={()=>setTab(k)}
-          className={cls("px-4 py-2 text-sm font-semibold border-b-2 -mb-px transition", tab===k?"border-sky-500 text-sky-300":"border-transparent text-slate-400 hover:text-slate-200")}>{l}</button>)}
+          className={cls("px-4 py-2 text-sm font-semibold border-b-2 -mb-px transition", shown===k?"border-sky-500 text-sky-300":"border-transparent text-slate-400 hover:text-slate-200")}>{l}</button>)}
       </div>
 
-      {tab==="overview" && <Overview data={data} reload={load} strategies={strategies}/>}
-      {tab==="strategies" && <Strategies reload={load}/>}
-      {tab==="tradingview" && <TradingViewTab data={data} reload={load}/>}
-      {tab==="ea" && <EAManager reload={load}/>}
+      {shown==="overview" && <Overview data={data} reload={load} strategies={strategies}/>}
+      {shown==="strategies" && <Strategies reload={load}/>}
+      {shown==="tradingview" && <TradingViewTab data={data} reload={load}/>}
+      {shown==="ea" && <EAManager reload={load}/>}
+      {shown==="cloud" && <CloudTab data={data} strategies={strategies}/>}
 
       <p className="text-xs text-slate-600 text-center pb-6 my">
         ပညာရေးအတွက် software ဖြစ်ပါတယ်။ Default က paper trading ပါ။ Automated trading မှာ risk များပါတယ် — ဆုံးရှုံးလို့ မဖြစ်တဲ့ ငွေကို ဘယ်တော့မှ မသုံးပါနဲ့။

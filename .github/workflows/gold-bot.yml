@@ -1,0 +1,53 @@
+name: Gold bot (cloud paper trading)
+
+on:
+  schedule:
+    - cron: "*/15 * * * *"     # every 15 min (GitHub may delay scheduled runs)
+  workflow_dispatch: {}         # "Run workflow" button for a manual run
+
+permissions:
+  contents: write
+
+concurrency:
+  group: gold-bot
+  cancel-in-progress: false
+
+jobs:
+  cycle:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Get saved bot state (bot-data branch)
+        run: |
+          git fetch origin bot-data:bot-data 2>/dev/null && git worktree add bot-data bot-data \
+            || { mkdir -p bot-data; echo "First run — starting fresh."; }
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: backend/requirements.txt
+
+      - name: Install
+        run: pip install -r backend/requirements.txt yfinance google-generativeai
+
+      - name: Run one trading cycle
+        env:
+          BOT_DATA_DIR: bot-data
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+        run: python cloud/run_cycle.py
+
+      - name: Save results
+        run: |
+          cd bot-data
+          git config --global user.name "gold-bot"
+          git config --global user.email "gold-bot@users.noreply.github.com"
+          if [ ! -e .git ]; then
+            git init -q -b bot-data
+            git remote add origin "https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}.git"
+          fi
+          git add -A
+          git commit -q -m "bot run $(date -u +%Y-%m-%dT%H:%MZ)" || { echo "nothing to save"; exit 0; }
+          git push -q origin HEAD:bot-data

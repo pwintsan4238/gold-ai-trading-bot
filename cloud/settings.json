@@ -1,0 +1,8 @@
+{
+  "_help": "Edit on GitHub to change the cloud bot. strategy: ai | rules | custom:<file_name> (files in backend/strategies/custom). auto_trade: true/false. Changes apply on the next run (~15 min).",
+  "strategy": "rules",
+  "auto_trade": true,
+  "yahoo_symbol": "GC=F",
+  "interval": "15m",
+  "start_balance": 10000
+}

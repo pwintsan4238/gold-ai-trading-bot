@@ -9,3 +9,4 @@ backend/ea_library/*.ex4
 backend/ea_library/*.ex5
 .venv/
 venv/
+bot-data/
