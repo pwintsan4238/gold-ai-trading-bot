@@ -3,13 +3,16 @@
 <head>
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-<title>Gold AI Trading Bot — XAU/USD</title>
+<title>Gold AI Trading Bot</title>
 <script src="https://cdn.tailwindcss.com"></script>
 <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
 <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Noto+Sans+Myanmar:wght@400;600&display=swap" rel="stylesheet">
 <style>
-  body{background:#0b1220}
+  body{background:#0b1220;font-family:ui-sans-serif,system-ui,"Segoe UI","Noto Sans Myanmar","Myanmar Text",sans-serif}
+  .my{line-height:1.85}
   textarea,input,select{background:#0f172a;border:1px solid #1e293b;border-radius:.5rem;padding:.45rem .6rem;color:#e2e8f0}
   textarea{font-family:ui-monospace,Consolas,monospace;font-size:12.5px;line-height:1.45}
   ::-webkit-scrollbar{width:8px;height:8px}::-webkit-scrollbar-thumb{background:#1e293b;border-radius:4px}
@@ -29,6 +32,7 @@ const cls = (...a) => a.filter(Boolean).join(" ");
 async function api(path, opts={}){
   const o = {...opts};
   if(o.body && typeof o.body !== "string"){ o.body = JSON.stringify(o.body); o.headers = {"Content-Type":"application/json"}; }
+  if(DEMO) return demo.call(path, o);
   const r = await fetch(path, o);
   let j = null; try { j = await r.json(); } catch(e) {}
   if(!r.ok) throw new Error((j && (j.detail || j.error)) || `HTTP ${r.status}`);
@@ -36,6 +40,153 @@ async function api(path, opts={}){
 }
 const post = (p, body={}) => api(p, {method:"POST", body});
 const copy = t => navigator.clipboard.writeText(t);
+
+// ------------------------------------------------------------ DEMO MODE
+// Opened anywhere except your own PC (e.g. the public live link), the dashboard
+// runs on built-in sample data. Nothing connects to a broker; nothing trades.
+const DEMO = !["127.0.0.1","localhost"].includes(location.hostname) || location.hash === "#demo";
+const ask = m => DEMO ? true : window.confirm(m);
+
+const demo = (() => {
+  const rnd = (a,b) => a + Math.random()*(b-a);
+  let price = 2652.4, auto = false, strategy = "ai", balance = 10000, tid = 0, sid = 0, tick = 0;
+  let candles = []; { let p = price - 18; for(let i=0;i<160;i++){ p += rnd(-2.2,2.4); candles.push(p);} price = candles[candles.length-1]; }
+  const trades = [], signals = [];
+  const now = (m=0) => new Date(Date.now() - m*60000).toISOString();
+  const strategies = [
+    {key:"ai", type:"builtin", name:"AI Analyst", description:"Gemini reads the indicators (built-in rules if no API key).", backtestable:true},
+    {key:"rules", type:"builtin", name:"Rule Engine", description:"EMA trend + MACD + RSI alignment. Deterministic, no network.", backtestable:true},
+    {key:"tradingview", type:"builtin", name:"TradingView Alerts", description:"Trades the BUY/SELL/CLOSE alerts your TradingView charts send to the webhook.", backtestable:false},
+    {key:"custom:ema_cross", type:"custom", file:"ema_cross.py", name:"EMA 9/21 Cross", description:"Buys a fresh EMA9-over-EMA21 cross in an EMA50 uptrend; sells the mirror.", backtestable:true},
+    {key:"custom:rsi_reversal", type:"custom", file:"rsi_reversal.py", name:"RSI Reversal", description:"Buys when RSI climbs back above 30, sells when it drops back below 70. Sets its own SL/TP.", backtestable:true},
+  ];
+  const code = {"ema_cross.py":'NAME = "EMA 9/21 Cross"\n\ndef generate_signal(df, ind):\n    ...\n', "rsi_reversal.py":'NAME = "RSI Reversal"\n\ndef generate_signal(df, ind):\n    ...\n'};
+  const eaFiles = [{name:"GoldBot_EMA_Example.mq5", platform:"MT5", kind:"source", editable:true, has_ontick:true, uses_dll:false, is_indicator:false,
+    inputs:[{name:"RiskPercent",default:"1.0"},{name:"FastEMA",default:"20"},{name:"SlowEMA",default:"50"},{name:"ATRPeriod",default:"14"},{name:"SL_ATR_Mult",default:"1.5"},{name:"RewardRisk",default:"1.5"}]}];
+  const eaCode = {"GoldBot_EMA_Example.mq5":"// GoldBot_EMA_Example.mq5 — EMA20/EMA50 crossover, ATR stop, fixed % risk.\n#include <Trade\\Trade.mqh>\ninput double RiskPercent = 1.0;\ninput int    FastEMA     = 20;\ninput int    SlowEMA     = 50;\n// ... full code ships with the bot\nvoid OnTick() { /* ... */ }\n"};
+  let eaRunning = null;
+  const ema = (arr, n) => { const k = 2/(n+1); let e = arr[0]; for(const v of arr) e = v*k + e*(1-k); return e; };
+
+  // seed history
+  [["BUY",62,"WIN",148.5,"ai"],["SELL",51,"LOSS",-99.4,"custom:ema_cross"],["BUY",38,"WIN",151.2,"tradingview"],["SELL",22,"WIN",146.8,"ai"],["BUY",9,"LOSS",-100.1,"rules"]]
+    .forEach(([side,m,res,pnl,src]) => { const e = price + rnd(-12,12);
+      trades.push({id:++tid, opened_at:now(m*10), side, entry:e, stop_loss: side==="BUY"?e-6:e+6, take_profit: side==="BUY"?e+9:e-9,
+        lot:0.16, result:res, pnl, source:src, reason: src==="tradingview"?"TradingView "+side+": EMA cross":"EMA trend + MACD aligned"}); balance += pnl; });
+  signals.push({id:++sid, received_at:now(380), source:"tradingview", action:"BUY", price:price-8, stop_loss:price-14, take_profit:price+1, status:"executed", note:"BUY 0.16 lot"});
+
+  function decision(){
+    const e20 = ema(candles.slice(-60),20), e50 = ema(candles.slice(-110),50), up = e20 > e50;
+    if(strategy === "tradingview") return {signal:"WAIT", confidence:0, trend: up?"BULLISH":"BEARISH", reason:"Waiting for a TradingView alert.", source:"tradingview"};
+    const strong = Math.abs(e20-e50) > 1.2 && tick % 7 === 0;
+    return strong ? {signal: up?"BUY":"SELL", confidence: 72, trend: up?"BULLISH":"BEARISH", reason: up?"EMA20>EMA50 (uptrend), MACD bullish, RSI 56 neutral-healthy":"EMA20<EMA50 (downtrend), MACD bearish, RSI 44", source:strategy}
+                  : {signal:"WAIT", confidence:0, trend: up?"BULLISH":"BEARISH", reason:(up?"EMA20>EMA50 (uptrend)":"EMA20<EMA50 (downtrend)")+", signals not aligned", source:strategy};
+  }
+  function makePlan(d){
+    if(d.signal==="WAIT") return {ok:false, reject_reason:"No directional signal (WAIT)."};
+    const dist = 5.8, buy = d.signal==="BUY", lot = Math.floor(balance*0.01/(dist*100)*100)/100;
+    return {ok:true, side:d.signal, entry:+price.toFixed(2), stop_loss:+(buy?price-dist:price+dist).toFixed(2),
+      take_profit:+(buy?price+dist*1.5:price-dist*1.5).toFixed(2), lot, risk_reward:1.5, risk_amount:+(lot*dist*100).toFixed(2)};
+  }
+  const open = () => trades.filter(t=>t.result==="OPEN");
+  function closeT(t, px){ const pnl = (t.side==="BUY"?px-t.entry:t.entry-px)*t.lot*100; t.result = pnl>0?"WIN":"LOSS"; t.pnl=+pnl.toFixed(2); t.exit_price=px; balance += pnl; }
+  function openT(plan, d){ trades.push({id:++tid, opened_at:now(), side:plan.side, entry:plan.entry, stop_loss:plan.stop_loss, take_profit:plan.take_profit, lot:plan.lot, result:"OPEN", source:d.source, reason:d.reason}); }
+  let last = {d:decision(), plan:{ok:false, reject_reason:"Auto-trading off."}};
+  function cycle(){
+    tick++; price += rnd(-1.6,1.7); candles.push(price); candles.shift();
+    for(const t of open()){ if(t.side==="BUY" ? (price<=t.stop_loss||price>=t.take_profit) : (price>=t.stop_loss||price<=t.take_profit)) closeT(t, price); }
+    const d = decision(); let plan = {ok:false, reject_reason:"Auto-trading off."};
+    if(auto){ if(open().length) plan = {ok:false, reject_reason:"A trade is already open."}; else { plan = makePlan(d); if(plan.ok) openT(plan,d); } }
+    last = {d, plan};
+  }
+  setInterval(cycle, 3000);
+  const stats = () => { const c = trades.filter(t=>t.result!=="OPEN"), w = c.filter(t=>t.result==="WIN"), today = new Date().toISOString().slice(0,10);
+    return {total_trades:c.length, wins:w.length, losses:c.length-w.length, win_rate:c.length?+(w.length/c.length*100).toFixed(1):0,
+      total_pnl:+c.reduce((a,t)=>a+t.pnl,0).toFixed(2), today_pnl:+c.filter(t=>t.opened_at.slice(0,10)===today).reduce((a,t)=>a+t.pnl,0).toFixed(2)}; };
+  const tvSignal = action => { const s = {id:++sid, received_at:now(), source:"test", action, price:+price.toFixed(2), stop_loss:null, take_profit:null, status:"ignored", note:""};
+    if(strategy !== "tradingview") s.note = "Test received — switch strategy to 'TradingView Alerts' to trade it.";
+    else if(action === "CLOSE"){ const o = open(); o.forEach(t=>closeT(t,price)); s.status="executed"; s.note=`Closed ${o.length} trade(s).`; }
+    else if(!auto) s.note = "Auto-trading is OFF.";
+    else { open().filter(t=>t.side!==action).forEach(t=>closeT(t,price));
+      if(open().length){ s.status="rejected"; s.note="A trade is already open."; }
+      else { const d = {signal:action, confidence:80, reason:`TradingView ${action}: dashboard test`, source:"tradingview"}; const p = makePlan(d); openT(p,d); s.status="executed"; s.note=`${p.side} ${p.lot} lot @ ${p.entry}`; last = {d, plan:p}; } }
+    signals.unshift(s); return s; };
+  const pine = "//@version=5\n// GoldBot Signals — sends BUY / SELL alerts (with SL & TP) to your bot.\nindicator(\"GoldBot Signals\", overlay = true)\npassphrase = input.string(\"PASTE_PASSPHRASE_HERE\", \"Webhook passphrase\")\n// ... full script ships with the bot (tradingview/goldbot_alerts.pine)\n";
+  const pp = "demo-passphrase-123";
+
+  return { candles: () => candles, async call(path, o){
+    const m = (o.method||"GET").toUpperCase(), b = o.body ? JSON.parse(o.body) : {};
+    const name = s => decodeURIComponent(path.split("/").pop());
+    if(path==="/api/status"){ const s = strategies.find(x=>x.key===strategy);
+      return {mode:"paper", data_note:"Demo — sample data", symbol:"XAUUSD", timeframe:"M15", tv_chart_symbol:"OANDA:XAUUSD",
+        price:+price.toFixed(2), trend:last.d.trend, decision:last.d, plan:last.plan, strategy:{key:strategy, name:s?s.name:strategy},
+        auto_trade:auto, halted_reason:"", balance:+balance.toFixed(2), open_trades:open(), stats:stats(),
+        ea:{running:eaRunning}, last_updated:now()}; }
+    if(path.startsWith("/api/trades")) return [...trades].reverse();
+    if(path==="/api/autotrade"){ auto = b.enabled; return {auto_trade:auto}; }
+    if(path==="/api/analyze"){ cycle(); return {}; }
+    if(path==="/api/close_all"){ const o2 = open(); o2.forEach(t=>closeT(t,price)); return {closed:o2.length}; }
+    if(path==="/api/backtest"){ if(b.strategy==="tradingview") throw new Error("TradingView alerts can't be backtested here — use TradingView's own Strategy Tester.");
+      const seed = [...b.strategy].reduce((a,c)=>a+c.charCodeAt(0),0), n = 28 + seed%12, w = Math.round(n*(0.36+(seed%9)/40)), pnl = +(w*150 - (n-w)*100).toFixed(2);
+      return {strategy:b.strategy, candles_tested:1200, start_balance:10000, end_balance:10000+pnl, total_trades:n, wins:w, losses:n-w,
+        win_rate:+(w/n*100).toFixed(1), total_pnl:pnl, return_pct:+(pnl/100).toFixed(2), max_drawdown_pct:+(4+seed%7).toFixed(2)}; }
+    if(path==="/api/strategies") return {active:strategy, items:strategies};
+    if(path==="/api/strategies/active"){ strategy = b.key; return {active:strategy}; }
+    if(path==="/api/strategies/custom" && m==="POST"){
+      if(!/^[a-z][a-z0-9_]{0,40}\.py$/.test(b.filename)) throw new Error("File name must be lowercase letters, numbers or _ and end in .py (e.g. my_strategy.py).");
+      if(!/def\s+generate_signal\s*\(/.test(b.code)) throw new Error("File must define generate_signal(df, ind).");
+      code[b.filename] = b.code; const key = "custom:"+b.filename.slice(0,-3), nm = (b.code.match(/NAME\s*=\s*["'](.+?)["']/)||[])[1] || key.slice(7);
+      const ex = strategies.find(s=>s.key===key); if(ex) ex.name = nm; else strategies.push({key, type:"custom", file:b.filename, name:nm, description:"", backtestable:true});
+      return {key, sample_decision:{signal:"WAIT", reason:"demo test run"}}; }
+    if(path.startsWith("/api/strategies/custom/")){ const f = name();
+      if(m==="DELETE"){ const i = strategies.findIndex(s=>s.file===f); if(i>=0) strategies.splice(i,1); if(strategy==="custom:"+f.slice(0,-3)) strategy="ai"; return {ok:true}; }
+      return {filename:f, code:code[f]||""}; }
+    if(path==="/api/tv/info") return {webhook_path:"/api/tv/webhook", passphrase:pp, public_url:"", max_age_sec:300, signals, pine,
+      templates:{strategy_alert_message:`{"passphrase": "${pp}", "action": "{{strategy.order.action}}", "symbol": "{{ticker}}", "price": {{close}}}`,
+        manual_buy:`{"passphrase": "${pp}", "action": "BUY", "symbol": "{{ticker}}"}`, manual_sell:`{"passphrase": "${pp}", "action": "SELL", "symbol": "{{ticker}}"}`, manual_close:`{"passphrase": "${pp}", "action": "CLOSE"}`}};
+    if(path==="/api/tv/test") return {ok:true, signal:tvSignal(b.action)};
+    if(path==="/api/tv/public_url") return {public_url:""};
+    if(path==="/api/tv/passphrase/regenerate") throw new Error("Demo mode — run the bot on your PC to get your own passphrase.");
+    if(path==="/api/ea") return {files:eaFiles, settings:{MT5:{terminal_path:"",metaeditor_path:"",data_path:"",portable:false},MT4:{terminal_path:"",metaeditor_path:"",data_path:"",portable:false}},
+      running:eaRunning, halted_reason:"", guardian:eaRunning?{active:true, loss_pct:0.4, limit_pct:3, equity:balance}:null, is_windows:true, periods:["M1","M5","M15","M30","H1","H4","D1","W1","MN1"]};
+    if(path==="/api/ea/reports") return [];
+    if(path==="/api/ea/upload"){ if(!/\.(mq5|mq4|ex5|ex4|mqh|set)$/i.test(b.filename)) throw new Error("Use a file ending in .mq5, .mq4, .ex5, .ex4, .mqh or .set.");
+      const ext = b.filename.split(".").pop().toLowerCase(); if(!eaFiles.find(f=>f.name===b.filename))
+        eaFiles.push({name:b.filename, platform:/4$/.test(ext)?"MT4":/5$/.test(ext)?"MT5":"ANY", kind:{mqh:"include",set:"preset"}[ext]||(ext.startsWith("mq")?"source":"compiled"), editable:!ext.startsWith("ex"), has_ontick:/OnTick|start\s*\(/.test(b.code||""), inputs:[]});
+      if(b.code) eaCode[b.filename] = b.code; return {saved:b.filename, warnings:[]}; }
+    if(path.startsWith("/api/ea/file/")){ const f = name(); if(m==="DELETE"){ const i = eaFiles.findIndex(x=>x.name===f); if(i>=0) eaFiles.splice(i,1); return {ok:true}; } return {filename:f, code:eaCode[f]||""}; }
+    if(path==="/api/ea/compile") return {ok:true, summary:"0 errors, 0 warnings (demo)", errors:[], warnings:[], compiled_file:b.name.replace(/\.mq(\d)$/,".ex$1")};
+    if(path==="/api/ea/run"){ eaRunning = {name:b.name, platform:/4$/.test(b.name)?"MT4":"MT5", symbol:b.symbol, period:b.period, started_at:now()};
+      return {ok:true, running:eaRunning, message:`Demo: in the real bot, MetaTrader restarts with ${b.name} on ${b.symbol} ${b.period} and trades automatically.`}; }
+    if(path==="/api/ea/stop"){ eaRunning = null; return {ok:true, message:"Demo: EA stopped."}; }
+    if(path==="/api/ea/test") return {ok:true, message:"Demo: in the real bot, MetaTrader's Strategy Tester runs this EA and the report appears below."};
+    if(path==="/api/ea/detect") return {installs:[], settings:{}};
+    if(path==="/api/ea/settings") return {};
+    if(path.startsWith("/api/ea/account")) return {known:true, demo:true, note:"Demo account (sample).", login:1234567, server:"Broker-Demo", balance, currency:"USD"};
+    throw new Error("Not available in demo: " + path);
+  }};
+})();
+
+function DemoChart({height=460}){
+  const [, force] = useState(0);
+  useEffect(()=>{ const i = setInterval(()=>force(x=>x+1), 3000); return ()=>clearInterval(i); },[]);
+  const c = demo.candles(), W = 1000, H = 400, lo = Math.min(...c), hi = Math.max(...c), pad = (hi-lo)*0.1 || 1;
+  const y = v => H - (v - lo + pad) / (hi - lo + 2*pad) * H, x = i => i / (c.length-1) * W;
+  const pts = c.map((v,i)=>`${x(i).toFixed(1)},${y(v).toFixed(1)}`).join(" ");
+  const last = c[c.length-1], up = last >= c[0];
+  const grid = [0,1,2,3,4].map(k => lo - pad + (hi-lo+2*pad)*k/4);
+  return (
+    <div style={{height}} className="rounded-lg overflow-hidden bg-slate-950 relative">
+      <svg viewBox={`0 0 ${W} ${H}`} preserveAspectRatio="none" className="w-full h-full">
+        {grid.map((g,i)=><line key={i} x1="0" x2={W} y1={y(g)} y2={y(g)} stroke="#1e293b" strokeWidth="1"/>)}
+        <polygon points={`0,${H} ${pts} ${W},${H}`} fill={up?"rgba(16,185,129,.10)":"rgba(244,63,94,.10)"}/>
+        <polyline points={pts} fill="none" stroke={up?"#10b981":"#f43f5e"} strokeWidth="2" vectorEffect="non-scaling-stroke"/>
+      </svg>
+      <div className="absolute top-2 left-3 text-xs text-slate-400">XAUUSD · M15 · sample prices</div>
+      <div className="absolute top-2 right-3 text-sm font-semibold">${fmt(last)}</div>
+      {grid.map((g,i)=><div key={i} className="absolute right-2 text-[10px] text-slate-600" style={{top:`calc(${(y(g)/H*100).toFixed(1)}% - 7px)`}}>{fmt(g,0)}</div>)}
+    </div>
+  );
+}
 
 function Badge({text, color}) {
   return <span className={cls("px-2 py-0.5 rounded text-xs font-semibold whitespace-nowrap", color)}>{text}</span>;
@@ -129,9 +280,9 @@ function Overview({data, reload, strategies}){
         <Card title="Today P/L"><div className={cls("text-3xl font-bold", pnlColor)}>${fmt(st.today_pnl)}</div></Card>
       </div>
 
-      <Card title={`TradingView chart · ${data.tv_chart_symbol}`}>
-        <TVChart symbol={data.tv_chart_symbol} timeframe={data.timeframe} />
-        <p className="text-xs text-slate-500 mt-2">Live chart from TradingView. The bot trades on its own data feed ({data.mode === "paper" ? "simulator" : "MetaTrader 5"}), so prices can differ.</p>
+      <Card title={DEMO ? "Price chart (demo)" : `TradingView chart · ${data.tv_chart_symbol}`}>
+        {DEMO ? <DemoChart/> : <TVChart symbol={data.tv_chart_symbol} timeframe={data.timeframe} />}
+        <p className="text-xs text-slate-500 mt-2 my">TradingView မှ Live chart ဖြစ်ပါတယ်။ Bot က သူ့ကိုယ်ပိုင် data feed ({data.mode === "paper" ? "simulator" : "MetaTrader 5"}) နဲ့ trade လုပ်တာမို့ ဈေးနှုန်း အနည်းငယ် ကွာနိုင်ပါတယ်။</p>
       </Card>
 
       <div className="grid md:grid-cols-2 gap-4">
@@ -157,7 +308,7 @@ function Overview({data, reload, strategies}){
               <span className="text-slate-400">Risk/Reward</span><span className="text-right">{fmt(plan.risk_reward,2)}</span>
               <span className="text-slate-400">Risk $</span><span className="text-right">${fmt(plan.risk_amount)}</span>
             </div>
-          ) : <p className="text-sm text-slate-400">No trade: {plan.reject_reason || "waiting for a clean setup."}</p>}
+          ) : <p className="text-sm text-slate-400 my">No trade: {plan.reject_reason || "setup ကောင်းကောင်း ပေါ်လာတာကို စောင့်နေပါတယ်။"}</p>}
         </Card>
       </div>
 
@@ -185,7 +336,7 @@ function Overview({data, reload, strategies}){
             <div><div className="text-slate-400">P/L</div><div>${fmt(bt.total_pnl)}</div></div>
             <div><div className="text-slate-400">Candles</div><div>{bt.candles_tested}</div></div>
           </div>
-        ) : <p className="text-sm text-slate-400">Backtest any strategy on simulated gold data before enabling auto-trading. (TradingView alerts are tested in TradingView; EAs in MetaTrader's Strategy Tester — see the EA tab.)</p>}
+        ) : <p className="text-sm text-slate-400 my">Auto-Trading မဖွင့်ခင် strategy တစ်ခုချင်းစီကို simulated gold data နဲ့ Backtest လုပ်ပြီး စစ်ဆေးပါ။ (TradingView alerts ကို TradingView ထဲမှာ၊ EA တွေကို MetaTrader ရဲ့ Strategy Tester မှာ စမ်းပါ — EA Manager tab ကိုကြည့်ပါ။)</p>}
         <Msg m={msg}/>
       </Card>
 
@@ -198,7 +349,7 @@ function Overview({data, reload, strategies}){
               <th className="pr-3">Result</th><th className="pr-3">P/L</th><th>Reason</th></tr>
             </thead>
             <tbody>
-              {trades.length===0 && <tr><td colSpan="10" className="py-4 text-slate-500">No trades yet.</td></tr>}
+              {trades.length===0 && <tr><td colSpan="10" className="py-4 text-slate-500">Trade မရှိသေးပါ။</td></tr>}
               {trades.map(t=>(
                 <tr key={t.id} className="border-b border-slate-800/60">
                   <td className="py-2 pr-3 text-slate-400 whitespace-nowrap">{(t.opened_at||"").slice(5,16).replace("T"," ")}</td>
@@ -258,14 +409,13 @@ function Strategies({reload}){
     catch(e){ setMsg({err:true,text:e.message}); }
   };
   const edit = async file => { const r = await api(`/api/strategies/custom/${file}`); setFname(file); setCode(r.code); window.scrollTo({top:document.body.scrollHeight,behavior:"smooth"}); };
-  const del = async file => { if(!confirm(`Delete ${file}?`)) return; await api(`/api/strategies/custom/${file}`,{method:"DELETE"}); load(); reload(); };
+  const del = async file => { if(!ask(`Delete ${file}?`)) return; await api(`/api/strategies/custom/${file}`,{method:"DELETE"}); load(); reload(); };
   const upload = async e => { const f=e.target.files[0]; if(!f) return; setFname(f.name.toLowerCase().replace(/[^a-z0-9_.]/g,"_")); setCode(await readFile(f)); e.target.value=""; };
 
   return (
     <div className="space-y-5">
       <Card title="Choose the signal source">
-        <p className="text-sm text-slate-400 mb-3">Whichever you pick, every trade still goes through the same safety gates: auto-trading switch, {""}
-          daily loss stop, max trades/day, one trade at a time, confidence + reward:risk checks, fixed % lot size.</p>
+        <p className="text-sm text-slate-400 mb-3 my">ဘယ် strategy ကိုရွေးရွေး trade တိုင်းဟာ တူညီတဲ့ safety gates တွေကို ဖြတ်ရပါတယ် — Auto-Trading switch၊ daily loss stop၊ max trades/day၊ တစ်ကြိမ်မှာ trade တစ်ခုသာ၊ confidence နဲ့ reward:risk စစ်ဆေးချက်၊ fixed % lot size။</p>
         <div className="grid md:grid-cols-2 gap-3">
           {list.items.map(s=>(
             <div key={s.key} className={cls("rounded-lg border p-3", s.key===list.active?"border-sky-500 bg-sky-500/10":"border-slate-800")}>
@@ -293,7 +443,7 @@ function Strategies({reload}){
           <Btn kind="ghost" onClick={()=>{setFname("my_strategy.py");setCode(STRAT_TEMPLATE)}}>New from template</Btn>
         </div>
         <textarea value={code} onChange={e=>setCode(e.target.value)} spellCheck="false" className="w-full h-96"/>
-        <p className="text-xs text-amber-300/80 mt-2">⚠ Custom strategies run as real Python inside the bot. Only save code you wrote or fully trust.</p>
+        <p className="text-xs text-amber-300/80 mt-2 my">⚠ Custom strategy တွေဟာ bot ထဲမှာ Python code အစစ်အဖြစ် run ပါတယ်။ ကိုယ်တိုင်ရေးထားတဲ့ ဒါမှမဟုတ် အပြည့်အဝ ယုံကြည်ရတဲ့ code ကိုသာ save ပါ။</p>
         <Msg m={msg}/>
       </Card>
     </div>
@@ -316,21 +466,21 @@ function TradingViewTab({data, reload}){
     try { const r = await post("/api/tv/test",{action}); setMsg({text:`Test ${action}: ${r.signal.status}${r.signal.note?" — "+r.signal.note:""}`}); load(); reload(); }
     catch(e){ setMsg({err:true,text:e.message}); } };
   const saveUrl = async () => { await post("/api/tv/public_url",{url}); load(); };
-  const regen = async () => { if(!confirm("Make a new passphrase? Existing TradingView alerts will stop working until you update them.")) return;
+  const regen = async () => { if(!ask("Passphrase အသစ် လုပ်မလား? လက်ရှိ TradingView alerts တွေကို update မလုပ်မချင်း အလုပ်မလုပ်တော့ပါ။")) return;
     try { await post("/api/tv/passphrase/regenerate"); load(); } catch(e){ setMsg({err:true,text:e.message}); } };
   const usetv = async () => { await post("/api/strategies/active",{key:"tradingview"}); reload(); };
 
   return (
     <div className="space-y-5">
       {!active && <div className="bg-amber-900/30 border border-amber-700 text-amber-200 rounded-lg px-4 py-3 text-sm flex items-center justify-between gap-3">
-        <span>The bot is using <b>{data.strategy.name}</b>. TradingView alerts are logged but not traded until you switch.</span>
+        <span className="my">Bot က လက်ရှိ <b>{data.strategy.name}</b> ကို သုံးနေပါတယ်။ TradingView alerts တွေကို မှတ်တမ်းတင်ထားပေမယ့် strategy ပြောင်းမှသာ trade လုပ်ပါမယ်။</span>
         <Btn kind="primary" onClick={usetv}>Trade TradingView alerts</Btn></div>}
 
       <div className="grid lg:grid-cols-2 gap-5">
         <Card title="1 · Make the webhook reachable">
-          <p className="text-sm text-slate-400">TradingView sends alerts from the internet, so your local bot needs a public HTTPS address. Easiest: Cloudflare Tunnel (free). In a second terminal run:</p>
+          <p className="text-sm text-slate-400 my">TradingView က internet ကနေ alert ပို့တာမို့ သင့်ကွန်ပျူတာထဲက bot မှာ public HTTPS address တစ်ခု လိုပါတယ်။ အလွယ်ဆုံးက Cloudflare Tunnel (အခမဲ့) ပါ။ Terminal နောက်တစ်ခုမှာ ဒါကို run ပါ:</p>
           <div className="flex items-center gap-2 mt-2"><code className="flex-1 bg-slate-950 rounded px-3 py-2 text-sm">cloudflared tunnel --url http://127.0.0.1:8000</code><CopyBtn text="cloudflared tunnel --url http://127.0.0.1:8000"/></div>
-          <p className="text-xs text-slate-500 mt-2">Copy the <code>https://….trycloudflare.com</code> address it prints and paste it here. Only the webhook is reachable through it — the dashboard stays private.</p>
+          <p className="text-xs text-slate-500 mt-2 my">ထွက်လာတဲ့ <code>https://….trycloudflare.com</code> address ကို copy ကူးပြီး ဒီမှာ paste လုပ်ပါ။ Internet ကနေ webhook ကိုသာ ဝင်လို့ရပြီး dashboard ကတော့ private အဖြစ် ရှိနေပါမယ်။</p>
           <div className="flex gap-2 mt-3"><input value={url} onChange={e=>setUrl(e.target.value)} placeholder="https://xxxx.trycloudflare.com" className="flex-1 text-sm"/><Btn onClick={saveUrl}>Save</Btn></div>
           <div className="mt-4 text-sm text-slate-400">Your webhook URL</div>
           <div className="flex items-center gap-2 mt-1"><code className="flex-1 bg-slate-950 rounded px-3 py-2 text-sm text-sky-300 break-all">{hook}</code><CopyBtn text={hook}/></div>
@@ -338,8 +488,8 @@ function TradingViewTab({data, reload}){
 
         <Card title="2 · Your secret passphrase" right={<Btn small kind="ghost" onClick={regen}>Regenerate</Btn>}>
           <div className="flex items-center gap-2"><code className="flex-1 bg-slate-950 rounded px-3 py-2 text-sm text-amber-300 break-all">{info.passphrase}</code><CopyBtn text={info.passphrase}/></div>
-          <p className="text-xs text-slate-500 mt-2">Every alert must include it, or the bot rejects it. Keep it private.</p>
-          <div className="mt-4 text-sm text-slate-400 mb-2">Try it without TradingView:</div>
+          <p className="text-xs text-slate-500 mt-2 my">Alert တိုင်းမှာ ဒီ passphrase ပါရပါမယ်၊ မပါရင် bot က လက်မခံပါ။ လျှို့ဝှက်ထားပါ။</p>
+          <div className="mt-4 text-sm text-slate-400 mb-2 my">TradingView မလိုဘဲ စမ်းကြည့်ရန်:</div>
           <div className="flex gap-2"><Btn kind="good" onClick={()=>test("BUY")}>Test BUY</Btn><Btn kind="danger" onClick={()=>test("SELL")}>Test SELL</Btn><Btn onClick={()=>test("CLOSE")}>Test CLOSE</Btn></div>
           <Msg m={msg}/>
         </Card>
@@ -349,16 +499,16 @@ function TradingViewTab({data, reload}){
         <div className="grid md:grid-cols-2 gap-5 text-sm">
           <div>
             <div className="font-semibold mb-1">Option A — ready-made GoldBot indicator</div>
-            <ol className="list-decimal ml-5 space-y-1 text-slate-300">
-              <li>TradingView → open <b>XAUUSD</b> → <b>Pine Editor</b> → paste the script → <b>Add to chart</b>.</li>
-              <li>Indicator settings → paste your passphrase into <i>Webhook passphrase</i>.</li>
-              <li><b>Create Alert</b> → Condition: <i>GoldBot Signals</i> → <i>Any alert() function call</i>.</li>
-              <li>Notifications → tick <b>Webhook URL</b> → paste your webhook URL → Create.</li>
+            <ol className="list-decimal ml-5 space-y-1 text-slate-300 my">
+              <li>TradingView မှာ <b>XAUUSD</b> ကိုဖွင့် → <b>Pine Editor</b> → script ကို paste → <b>Add to chart</b> နှိပ်ပါ။</li>
+              <li>Indicator settings ထဲက <i>Webhook passphrase</i> နေရာမှာ သင့် passphrase ကို ထည့်ပါ။</li>
+              <li><b>Create Alert</b> → Condition မှာ <i>GoldBot Signals</i> → <i>Any alert() function call</i> ကို ရွေးပါ။</li>
+              <li>Notifications မှာ <b>Webhook URL</b> ကို အမှန်ခြစ်ပြီး webhook URL ကို paste → <b>Create</b> နှိပ်ပါ။</li>
             </ol>
           </div>
           <div>
             <div className="font-semibold mb-1">Option B — your own Pine strategy</div>
-            <p className="text-slate-400 mb-2">Create an alert on the strategy, paste this as the <b>Message</b>, and set the webhook URL:</p>
+            <p className="text-slate-400 mb-2 my">Strategy ပေါ်မှာ alert တစ်ခုဖန်တီးပြီး ဒါကို <b>Message</b> အဖြစ် paste လုပ်ကာ webhook URL ထည့်ပါ:</p>
             <div className="flex items-start gap-2"><code className="flex-1 bg-slate-950 rounded px-3 py-2 text-xs break-all">{info.templates.strategy_alert_message}</code><CopyBtn text={info.templates.strategy_alert_message}/></div>
             <p className="text-slate-400 mt-3 mb-1">Manual alert messages:</p>
             {["manual_buy","manual_sell","manual_close"].map(k=>
@@ -366,14 +516,14 @@ function TradingViewTab({data, reload}){
           </div>
         </div>
         {showPine && <textarea readOnly value={info.pine} className="w-full h-80 mt-4"/>}
-        <p className="text-xs text-slate-500 mt-3">TradingView webhooks need a paid TradingView plan with 2-factor authentication on. Alerts older than {info.max_age_sec}s are ignored, and SL/TP sent in an alert are still checked by the risk manager.</p>
+        <p className="text-xs text-slate-500 mt-3 my">TradingView webhooks သုံးဖို့ paid TradingView plan နဲ့ 2-factor authentication ဖွင့်ထားဖို့ လိုပါတယ်။ {info.max_age_sec} စက္ကန့်ထက် ကြာနေတဲ့ alerts တွေကို လျစ်လျူရှုပြီး alert ထဲက SL/TP ကိုလည်း risk manager က ပြန်စစ်ပါတယ်။</p>
       </Card>
 
       <Card title="Alert log">
         <div className="overflow-x-auto"><table className="w-full text-sm">
           <thead className="text-slate-400 text-left border-b border-slate-800"><tr><th className="py-2 pr-3">Time (UTC)</th><th className="pr-3">From</th><th className="pr-3">Action</th><th className="pr-3">Price</th><th className="pr-3">SL / TP</th><th className="pr-3">Status</th><th>Note</th></tr></thead>
           <tbody>
-            {info.signals.length===0 && <tr><td colSpan="7" className="py-4 text-slate-500">No alerts yet. Use the test buttons above.</td></tr>}
+            {info.signals.length===0 && <tr><td colSpan="7" className="py-4 text-slate-500">Alert မရှိသေးပါ။ အပေါ်က test buttons တွေနဲ့ စမ်းကြည့်ပါ။</td></tr>}
             {info.signals.map(s=>(
               <tr key={s.id} className="border-b border-slate-800/60">
                 <td className="py-2 pr-3 text-slate-400 whitespace-nowrap">{s.received_at.slice(5,19).replace("T"," ")}</td>
@@ -425,11 +575,11 @@ function EAManager({reload}){
     const r = await post("/api/ea/upload",{filename:editor.name.trim(), code:editor.code});
     return {message:`Saved ${r.saved}` + (r.warnings.length?`\n⚠ ${r.warnings.join("\n⚠ ")}`:"")}; });
   const view = async name => { const r = await api(`/api/ea/file/${encodeURIComponent(name)}`); setEditor({name, code:r.code}); };
-  const del = name => confirm(`Delete ${name} from the library?`) && act("del", ()=>api(`/api/ea/file/${encodeURIComponent(name)}`,{method:"DELETE"}));
+  const del = name => ask(`Delete ${name} from the library?`) && act("del", ()=>api(`/api/ea/file/${encodeURIComponent(name)}`,{method:"DELETE"}));
   const compile = name => act("compile", async()=>{ const r = await post("/api/ea/compile",{name}); setCompileOut({name, ...r});
     return {message: r.ok ? `${name}: compiled ✓ (${r.summary})` : `${name}: ${r.summary}`}; });
   const detect = () => act("detect", async()=>{ const r = await post("/api/ea/detect");
-    return {message: r.installs.length ? `Found ${r.installs.length} MetaTrader install(s).` : "No MetaTrader install found. Install MT5 from your broker, open it once, then Detect again — or fill in the paths below."}; });
+    return {message: r.installs.length ? `Found ${r.installs.length} MetaTrader install(s).` : "MetaTrader ရှာမတွေ့ပါ။ Broker ဆီက MT5 ကို install လုပ်ပြီး တစ်ခါဖွင့်ကာ Detect ကို ပြန်နှိပ်ပါ — ဒါမှမဟုတ် အောက်မှာ paths တွေကို ဖြည့်ပါ။"}; });
   const checkAcct = async () => { try { setAccount(await api("/api/ea/account?platform=MT5")); } catch(e){ setAccount({note:e.message}); } };
 
   const run = ov.running, files = ov.files;
@@ -438,11 +588,11 @@ function EAManager({reload}){
 
   return (
     <div className="space-y-5">
-      {!ov.is_windows && <div className="bg-amber-900/30 border border-amber-700 text-amber-200 rounded-lg px-4 py-3 text-sm">
-        EAs run inside MetaTrader, which needs Windows. You can manage the library here; compile / run / test work when the bot runs on Windows with MT4 or MT5 installed.</div>}
+      {!ov.is_windows && <div className="bg-amber-900/30 border border-amber-700 text-amber-200 rounded-lg px-4 py-3 text-sm my">
+        EA တွေဟာ MetaTrader ထဲမှာ run တာမို့ Windows လိုပါတယ်။ Library ကို ဒီမှာ စီမံနိုင်ပြီး compile / run / test ကတော့ MT4 သို့မဟုတ် MT5 ထည့်ထားတဲ့ Windows ပေါ်မှာ bot run မှ အလုပ်လုပ်ပါမယ်။</div>}
       {ov.halted_reason && <div className="bg-rose-900/40 border border-rose-700 text-rose-200 rounded-lg px-4 py-2 text-sm">⛔ {ov.halted_reason}</div>}
 
-      <Card title="Running EA" right={run && <Btn kind="danger" onClick={()=>confirm("Stop the EA? This closes MetaTrader. Open positions stay at your broker with their SL/TP.") && act("stop",()=>post("/api/ea/stop"))} disabled={!!busy}>Stop EA</Btn>}>
+      <Card title="Running EA" right={run && <Btn kind="danger" onClick={()=>ask("EA ကို ရပ်မလား? MetaTrader ပိတ်သွားပါမယ်။ ဖွင့်ထားတဲ့ positions တွေက SL/TP နဲ့အတူ broker မှာ ဆက်ရှိနေပါမယ်။") && act("stop",()=>post("/api/ea/stop"))} disabled={!!busy}>Stop EA</Btn>}>
         {run ? (
           <div className="grid md:grid-cols-4 gap-3 text-sm">
             <div><div className="text-slate-400">EA</div><div className="font-semibold">{run.name}</div></div>
@@ -451,16 +601,16 @@ function EAManager({reload}){
             <div><div className="text-slate-400">Status</div><div className={run.terminal_closed?"text-amber-300":"text-emerald-400"}>{run.terminal_closed?"MetaTrader was closed":"Running"}</div></div>
             {ov.guardian && <div className="md:col-span-4 text-xs text-slate-400">🛡 Guardian: {ov.guardian.active ? `today's loss ${ov.guardian.loss_pct}% of ${ov.guardian.limit_pct}% limit (equity $${fmt(ov.guardian.equity)})` : ov.guardian.note}</div>}
           </div>
-        ) : <p className="text-sm text-slate-400">No EA running. Upload or paste one below, then click <b>Run</b>.</p>}
+        ) : <p className="text-sm text-slate-400 my">Run နေတဲ့ EA မရှိပါ။ အောက်မှာ EA ကို upload သို့မဟုတ် paste လုပ်ပြီး <b>Run</b> ကိုနှိပ်ပါ။</p>}
         <Msg m={msg}/>
       </Card>
 
       <Card title="EA library" right={<label className="text-sm cursor-pointer px-3 py-1.5 rounded-lg bg-sky-600 hover:bg-sky-500 font-semibold">Upload files<input type="file" multiple accept=".mq5,.mq4,.ex5,.ex4,.mqh,.set" className="hidden" onChange={upload}/></label>}>
-        <p className="text-xs text-slate-500 mb-3">Accepts .mq5 / .mq4 source, compiled .ex5 / .ex4, .mqh includes and .set presets. Includes and presets are copied along with every EA.</p>
+        <p className="text-xs text-slate-500 mb-3 my">.mq5 / .mq4 source၊ compiled .ex5 / .ex4၊ .mqh includes နဲ့ .set presets တွေကို လက်ခံပါတယ်။ Includes နဲ့ presets တွေကို EA တိုင်းနဲ့အတူ copy ကူးပေးပါတယ်။</p>
         <div className="overflow-x-auto"><table className="w-full text-sm">
           <thead className="text-slate-400 text-left border-b border-slate-800"><tr><th className="py-2 pr-3">File</th><th className="pr-3">Platform</th><th className="pr-3">Type</th><th className="pr-3">Inputs</th><th className="text-right">Actions</th></tr></thead>
           <tbody>
-            {files.length===0 && <tr><td colSpan="5" className="py-4 text-slate-500">Library is empty.</td></tr>}
+            {files.length===0 && <tr><td colSpan="5" className="py-4 text-slate-500">Library ထဲမှာ ဘာမှမရှိသေးပါ။</td></tr>}
             {files.map(f=>(
               <tr key={f.name} className="border-b border-slate-800/60 align-top">
                 <td className="py-2 pr-3"><div className="font-medium">{f.name}</div>
@@ -490,12 +640,12 @@ function EAManager({reload}){
             <Btn kind="ghost" onClick={checkAcct}>Check MT5 account</Btn>
           </div>
           {account && <div className={cls("text-sm", account.demo===false?"text-rose-300":"text-slate-300")}>{account.note} {account.login?`· #${account.login} ${account.server} · balance ${fmt(account.balance)} ${account.currency}`:""}</div>}
-          <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={runFor.confirm_demo} onChange={e=>setRunFor({...runFor,confirm_demo:e.target.checked})}/> This terminal is logged into a <b>DEMO</b> account</label>
-          <p className="text-xs text-slate-400">MetaTrader restarts with the EA on a {runFor.symbol} {runFor.period} chart and Algo Trading on. The EA uses its own lot size and stops; the bot's 1% rule doesn't apply to it. The guardian closes everything if the day's loss reaches the daily limit (MT5 + MetaTrader5 package).</p>
+          <label className="flex items-center gap-2 text-sm my"><input type="checkbox" checked={runFor.confirm_demo} onChange={e=>setRunFor({...runFor,confirm_demo:e.target.checked})}/> ဒီ terminal က <b>DEMO</b> account နဲ့ login ဝင်ထားပါတယ်</label>
+          <p className="text-xs text-slate-400 my">MetaTrader ကို ပြန်စပြီး EA ကို {runFor.symbol} {runFor.period} chart ပေါ်မှာ Algo Trading ဖွင့်ကာ တင်ပေးပါမယ်။ EA က ကိုယ်ပိုင် lot size နဲ့ stops တွေကို သုံးတာမို့ bot ရဲ့ 1% rule မသက်ဆိုင်ပါ။ တစ်နေ့တာ loss က daily limit ရောက်ရင် Guardian က position အားလုံးကို ပိတ်ပေးပါမယ် (MT5 + MetaTrader5 package လိုပါတယ်)။</p>
           <div className="flex gap-2">
             <Btn kind="good" disabled={!!busy} onClick={async()=>{
               const r = await act("run", ()=>post("/api/ea/run",{...runFor, restart:false}));
-              if(r && r.needs_restart && confirm(r.message + "\n\nRestart MetaTrader now?")) await act("run", ()=>post("/api/ea/run",{...runFor, restart:true}));
+              if(r && r.needs_restart && ask(r.message + "\n\nRestart MetaTrader now?")) await act("run", ()=>post("/api/ea/run",{...runFor, restart:true}));
               if(r && r.ok) setRunFor(null);
             }}>{busy==="run"?"Starting…":"Start EA"}</Btn>
             <Btn kind="ghost" onClick={()=>setRunFor(null)}>Cancel</Btn>
@@ -514,7 +664,7 @@ function EAManager({reload}){
               <option value={0}>Every tick</option><option value={1}>1-minute OHLC</option><option value={2}>Open prices only</option></select></label>
             <label>Preset<br/><select value={testFor.preset} onChange={e=>setTestFor({...testFor,preset:e.target.value})}><option value="">EA defaults</option>{presets.map(p=><option key={p}>{p}</option>)}</select></label>
           </div>
-          <p className="text-xs text-slate-400">Close MetaTrader first. It opens, runs the test and closes itself; the report appears below.</p>
+          <p className="text-xs text-slate-400 my">MetaTrader ကို အရင်ပိတ်ပါ။ သူ့ဘာသာဖွင့်ပြီး test run ကာ ပြန်ပိတ်သွားပါမယ်၊ report ကို အောက်မှာ မြင်ရပါမယ်။</p>
           <div className="flex gap-2"><Btn kind="primary" disabled={!!busy} onClick={async()=>{ const r=await act("test",()=>post("/api/ea/test",testFor)); if(r&&r.ok) setTestFor(null); }}>{busy==="test"?"Starting…":"Run test"}</Btn><Btn kind="ghost" onClick={()=>setTestFor(null)}>Cancel</Btn></div>
         </div>}
 
@@ -534,10 +684,10 @@ function EAManager({reload}){
       <div className="grid lg:grid-cols-2 gap-5">
         <Card title="MetaTrader paths" right={<Btn small kind="primary" onClick={detect} disabled={!!busy}>{busy==="detect"?"Searching…":"Detect MetaTrader"}</Btn>}>
           {["MT5","MT4"].map(p=><PathForm key={p} plat={p} s={ov.settings[p]} onSaved={load}/>)}
-          <p className="text-xs text-slate-500">Data folder = MetaTrader → File → Open Data Folder.</p>
+          <p className="text-xs text-slate-500 my">Data folder ကို MetaTrader → File → Open Data Folder မှာ ရှာနိုင်ပါတယ်။</p>
         </Card>
         <Card title="Tester reports">
-          {reports.length===0 ? <p className="text-sm text-slate-400">No reports yet.</p> :
+          {reports.length===0 ? <p className="text-sm text-slate-400">Report မရှိသေးပါ။</p> :
             <ul className="text-sm space-y-1">{reports.map(r=><li key={r.file}><a className="text-sky-400 hover:underline" href={`/api/ea/reports/${r.file}`} target="_blank">{r.file}</a> <span className="text-slate-500 text-xs">{r.platform} · {r.modified.slice(0,16).replace("T"," ")}</span></li>)}</ul>}
         </Card>
       </div>
@@ -602,6 +752,8 @@ function App(){
         </div>
       </div>
 
+      {DEMO && <div className="bg-violet-900/40 border border-violet-700 text-violet-100 rounded-lg px-4 py-3 text-sm my">
+        <b>DEMO MODE</b> — ဒါက နမူနာ data နဲ့ ပြထားတဲ့ demo ဖြစ်ပါတယ်။ Broker နဲ့ မချိတ်ထားသလို တကယ် trade လည်း မလုပ်ပါ။ Bot အစစ်ကို ကိုယ့် Windows PC မှာ run ပြီး TradingView alerts နဲ့ MetaTrader EA တွေကို အလိုအလျောက် trade လုပ်စေနိုင်ပါတယ်။</div>}
       {data.halted_reason && <div className="bg-rose-900/40 border border-rose-700 text-rose-200 rounded-lg px-4 py-2 text-sm">⛔ {data.halted_reason}</div>}
       {data.error && <div className="bg-rose-900/40 border border-rose-700 text-rose-200 rounded-lg px-4 py-2 text-sm">Engine error: {data.error}</div>}
 
@@ -615,8 +767,8 @@ function App(){
       {tab==="tradingview" && <TradingViewTab data={data} reload={load}/>}
       {tab==="ea" && <EAManager reload={load}/>}
 
-      <p className="text-xs text-slate-600 text-center pb-6">
-        Educational software. Defaults to paper trading. Automated trading is risky — never risk money you can't afford to lose.
+      <p className="text-xs text-slate-600 text-center pb-6 my">
+        ပညာရေးအတွက် software ဖြစ်ပါတယ်။ Default က paper trading ပါ။ Automated trading မှာ risk များပါတယ် — ဆုံးရှုံးလို့ မဖြစ်တဲ့ ငွေကို ဘယ်တော့မှ မသုံးပါနဲ့။
       </p>
     </div>
   );
