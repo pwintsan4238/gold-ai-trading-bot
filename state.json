@@ -57,6 +57,23 @@
    "pnl": 144.16,
    "exit_price": 3889.22,
    "closed_at": "2026-11-17T05:30:00+00:00"
+  },
+  {
+   "id": 4,
+   "opened_at": "2026-11-17T21:30:00+00:00",
+   "side": "SELL",
+   "symbol": "GC=F",
+   "entry": 3853.3,
+   "stop_loss": 3863.71,
+   "take_profit": 3837.69,
+   "lot": 0.09,
+   "confidence": 86,
+   "risk_reward": 1.5,
+   "reason": "EMA20<EMA50 (downtrend), MACD bearish",
+   "source": "rules",
+   "mode": "cloud-paper",
+   "result": "OPEN",
+   "pnl": null
   }
  ],
  "equity": [
@@ -73,9 +90,9 @@
    "balance": 9957.58
   }
  ],
- "last_candle": "2026-11-17T14:15:00+00:00",
+ "last_candle": "2026-11-17T21:30:00+00:00",
  "halted_day": null,
  "halted_reason": "",
- "runs": 4,
+ "runs": 5,
  "started_at": "2026-11-16T14:47:50.911358+00:00"
 }
