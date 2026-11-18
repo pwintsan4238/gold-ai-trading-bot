@@ -96,9 +96,9 @@
    "balance": 10098.07
   }
  ],
- "last_candle": "2026-11-18T03:30:00+00:00",
+ "last_candle": "2026-11-18T12:15:00+00:00",
  "halted_day": null,
  "halted_reason": "",
- "runs": 6,
+ "runs": 7,
  "started_at": "2026-11-16T14:47:50.911358+00:00"
 }
