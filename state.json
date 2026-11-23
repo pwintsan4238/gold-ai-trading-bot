@@ -1,5 +1,5 @@
 {
- "balance": 10051.02,
+ "balance": 10196.58,
  "trades": [
   {
    "id": 1,
@@ -148,8 +148,10 @@
    "reason": "EMA20>EMA50 (uptrend), MACD bullish, RSI 59 neutral-healthy",
    "source": "rules",
    "mode": "cloud-paper",
-   "result": "OPEN",
-   "pnl": null
+   "result": "WIN",
+   "pnl": 145.56,
+   "exit_price": 3609.29,
+   "closed_at": "2026-11-23T01:00:00+00:00"
   }
  ],
  "equity": [
@@ -180,11 +182,15 @@
   {
    "ts": "2026-11-22T23:00:00+00:00",
    "balance": 10051.02
+  },
+  {
+   "ts": "2026-11-23T01:00:00+00:00",
+   "balance": 10196.58
   }
  ],
- "last_candle": "2026-11-23T00:45:00+00:00",
+ "last_candle": "2026-11-23T09:00:00+00:00",
  "halted_day": null,
  "halted_reason": "",
- "runs": 23,
+ "runs": 24,
  "started_at": "2026-11-16T14:47:50.911358+00:00"
 }
